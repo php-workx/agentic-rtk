@@ -6,10 +6,13 @@ pub const SETTINGS_JSON: &str = "settings.json";
 pub const SETTINGS_LOCAL_JSON: &str = "settings.local.json";
 pub const HOOKS_JSON: &str = "hooks.json";
 pub const PRE_TOOL_USE_KEY: &str = "PreToolUse";
+pub const SESSION_END_KEY: &str = "SessionEnd";
 pub const BEFORE_TOOL_KEY: &str = "BeforeTool";
 
 /// Native Rust hook command for Claude Code (replaces rtk-rewrite.sh).
 pub const CLAUDE_HOOK_COMMAND: &str = "rtk hook claude";
+/// Native Rust SessionEnd hook command for safe transcript compaction.
+pub const CLAUDE_SESSION_HOOK_COMMAND: &str = "rtk session hook";
 /// Native Rust hook command for Cursor (replaces rtk-rewrite.sh).
 pub const CURSOR_HOOK_COMMAND: &str = "rtk hook cursor";
 

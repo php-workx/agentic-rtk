@@ -14,6 +14,7 @@ use std::path::PathBuf;
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     project: bool, // added: per-project scope flag
+    by_feature: bool,
     graph: bool,
     history: bool,
     quota: bool,
@@ -232,6 +233,32 @@ pub fn run(
             println!();
         }
 
+        if by_feature {
+            let features = tracker
+                .get_by_feature(project_scope.as_deref())
+                .context("Failed to load feature breakdown")?;
+            if !features.is_empty() {
+                println!("{}", styled("By Feature", true));
+                println!("{}", "─".repeat(46));
+                println!(
+                    "{:<14} {:>8} {:>9} {:>6}",
+                    "Feature", "Commands", "Saved", "Avg%"
+                );
+                println!("{}", "─".repeat(46));
+                for feature in features {
+                    println!(
+                        "{:<14} {:>8} {:>9} {:>5.0}%",
+                        feature_label(&feature.feature),
+                        feature.commands,
+                        format_tokens(feature.saved_tokens),
+                        feature.avg_savings_pct
+                    );
+                }
+                println!("{}", "─".repeat(46));
+                println!();
+            }
+        }
+
         if graph && !summary.by_day.is_empty() {
             println!("{}", styled("Daily Savings (last 30 days)", true)); // added: styled header
             println!("──────────────────────────────────────────────────────────");
@@ -441,6 +468,14 @@ fn shorten_path(path: &str) -> String {
             comps[comps.len() - 2],
             comps[comps.len() - 1]
         )
+    }
+}
+
+fn feature_label(feature: &str) -> &str {
+    match feature {
+        "cli" => "cli",
+        "session" => "session",
+        other => other,
     }
 }
 

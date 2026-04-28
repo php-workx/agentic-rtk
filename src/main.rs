@@ -5,6 +5,7 @@ mod discover;
 mod hooks;
 mod learn;
 mod parser;
+mod session;
 
 // Re-export command modules for routing
 use cmds::cloud::{aws_cmd, container, curl_cmd, psql_cmd, wget_cmd};
@@ -371,6 +372,10 @@ enum Commands {
         /// Install GitHub Copilot integration (VS Code + CLI)
         #[arg(long)]
         copilot: bool,
+
+        /// Add safe Claude Code SessionEnd transcript compaction hook (global Claude mode only)
+        #[arg(long = "session-compaction")]
+        session_compaction: bool,
     },
 
     /// Download with compact output (strips progress bars)
@@ -397,6 +402,9 @@ enum Commands {
         /// Filter statistics to current project (current working directory) // added
         #[arg(short, long)]
         project: bool,
+        /// Show savings grouped by RTK feature area
+        #[arg(short = 'B', long)]
+        by_feature: bool,
         /// Show ASCII graph of daily savings
         #[arg(short, long)]
         graph: bool,
@@ -569,8 +577,11 @@ enum Commands {
         format: String,
     },
 
-    /// Show RTK adoption across Claude Code sessions
-    Session {},
+    /// Show or compact Claude Code sessions
+    Session {
+        #[command(subcommand)]
+        command: Option<SessionCommands>,
+    },
 
     /// Manage telemetry consent and data (RGPD/GDPR)
     Telemetry {
@@ -768,6 +779,52 @@ enum HookCommands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum SessionCommands {
+    /// Compact a Claude Code session JSONL into a sidecar or apply it immediately
+    Compact {
+        /// Session id (looked up under ~/.claude/projects/) or full .jsonl path
+        #[arg(required_unless_present = "all")]
+        target: Option<String>,
+        /// Compact every top-level session under ~/.claude/projects
+        #[arg(long)]
+        all: bool,
+        /// Print stats without writing a sidecar or applying
+        #[arg(long)]
+        dry_run: bool,
+        /// Apply immediately with a managed backup
+        #[arg(long)]
+        apply: bool,
+        /// With --all, only compact sessions older than this duration (e.g. 30m, 2h, 7d)
+        #[arg(long)]
+        older_than: Option<String>,
+    },
+    /// Apply an existing .compressed sidecar with a managed backup
+    Apply {
+        /// Session id or full .jsonl path
+        target: String,
+    },
+    /// Restore a managed backup
+    Expand {
+        /// Session id or full .jsonl path
+        target: String,
+        /// Restore the latest managed backup
+        #[arg(long)]
+        latest: bool,
+        /// Restore a specific backup path
+        #[arg(long)]
+        backup: Option<String>,
+    },
+    /// Show compactability and backup status for a session
+    Status {
+        /// Session id or full .jsonl path
+        target: String,
+    },
+    /// Claude Code SessionEnd hook entrypoint
+    #[command(hide = true)]
+    Hook,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1756,6 +1813,7 @@ fn run_cli() -> Result<i32> {
             uninstall,
             codex,
             copilot,
+            session_compaction,
         } => {
             if show {
                 hooks::init::show_config(codex)?;
@@ -1809,6 +1867,7 @@ fn run_cli() -> Result<i32> {
                     claude_md,
                     hook_only,
                     codex,
+                    session_compaction,
                     patch_mode,
                     cli.verbose,
                 )?;
@@ -1835,6 +1894,7 @@ fn run_cli() -> Result<i32> {
 
         Commands::Gain {
             project, // added
+            by_feature,
             graph,
             history,
             quota,
@@ -1850,6 +1910,7 @@ fn run_cli() -> Result<i32> {
         } => {
             analytics::gain::run(
                 project, // added: pass project flag
+                by_feature,
                 graph,
                 history,
                 quota,
@@ -1973,8 +2034,34 @@ fn run_cli() -> Result<i32> {
             0
         }
 
-        Commands::Session {} => {
-            analytics::session_cmd::run(cli.verbose)?;
+        Commands::Session { command } => {
+            match command {
+                None => session::run_overview(cli.verbose)?,
+                Some(SessionCommands::Compact {
+                    target,
+                    all,
+                    dry_run,
+                    apply,
+                    older_than,
+                }) => session::run_compact(
+                    target.as_deref(),
+                    all,
+                    dry_run,
+                    apply,
+                    older_than.as_deref(),
+                    cli.verbose,
+                )?,
+                Some(SessionCommands::Apply { target }) => {
+                    session::run_apply(&target, cli.verbose)?
+                }
+                Some(SessionCommands::Expand {
+                    target,
+                    latest,
+                    backup,
+                }) => session::run_expand(&target, backup.as_deref(), latest, cli.verbose)?,
+                Some(SessionCommands::Status { target }) => session::run_status(&target)?,
+                Some(SessionCommands::Hook) => session::run_hook()?,
+            }
             0
         }
 
@@ -2641,7 +2728,7 @@ mod tests {
         // RTK meta-commands should produce parse errors (not fall through to raw execution).
         // Skip "proxy" because it uses trailing_var_arg (accepts any args by design).
         for cmd in RTK_META_COMMANDS {
-            if matches!(*cmd, "proxy" | "run" | "rewrite" | "session") {
+            if matches!(*cmd, "proxy" | "run" | "rewrite") {
                 continue; // these use trailing_var_arg (accept any args by design)
             }
             let result = Cli::try_parse_from(["rtk", cmd, "--nonexistent-flag-xyz"]);
@@ -2719,6 +2806,36 @@ mod tests {
     }
 
     #[test]
+    fn test_session_compact_parses() {
+        let cli = Cli::try_parse_from([
+            "rtk",
+            "session",
+            "compact",
+            "--apply",
+            "--older-than",
+            "2h",
+            "--all",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Session {
+                command:
+                    Some(SessionCommands::Compact {
+                        all,
+                        apply,
+                        older_than,
+                        ..
+                    }),
+            } => {
+                assert!(all);
+                assert!(apply);
+                assert_eq!(older_than.as_deref(), Some("2h"));
+            }
+            _ => panic!("Expected session compact command"),
+        }
+    }
+
+    #[test]
     fn test_meta_command_list_is_complete() {
         // Verify all meta-commands are in the guard list by checking they parse with valid syntax
         let meta_cmds_that_parse = [
@@ -2731,6 +2848,14 @@ mod tests {
             vec!["rtk", "run", "-c", "echo hi"],
             vec!["rtk", "hook-audit"],
             vec!["rtk", "cc-economics"],
+            vec!["rtk", "session"],
+            vec![
+                "rtk",
+                "session",
+                "compact",
+                "--dry-run",
+                "/tmp/session.jsonl",
+            ],
         ];
         for args in &meta_cmds_that_parse {
             let result = Cli::try_parse_from(args.iter());
