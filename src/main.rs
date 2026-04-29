@@ -8,7 +8,7 @@ mod parser;
 mod session;
 
 // Re-export command modules for routing
-use cmds::cloud::{aws_cmd, container, curl_cmd, psql_cmd, wget_cmd};
+use cmds::cloud::{aws_cmd, container, curl_cmd, psql_cmd, web_cmd, wget_cmd};
 use cmds::dotnet::{binlog, dotnet_cmd, dotnet_format_report, dotnet_trx};
 use cmds::git::{diff_cmd, gh_cmd, git, glab_cmd, gt_cmd};
 use cmds::go::{go_cmd, golangci_cmd};
@@ -556,6 +556,12 @@ enum Commands {
         /// Curl arguments (URL + options)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+    },
+
+    /// Fetch a web page and extract readable HTML content
+    Web {
+        /// URL to fetch
+        url: String,
     },
 
     /// Discover missed RTK savings from Claude Code history
@@ -1249,18 +1255,32 @@ fn run_fallback(parse_error: clap::Error) -> Result<i32> {
                     None
                 };
 
-                let filtered = core::toml_filter::apply_filter(filter, &combined_raw);
+                let processed = {
+                    let base = core::toml_filter::apply_filter(filter, &combined_raw);
+                    apply_toml_fallback_postprocessors(&base)
+                };
+                let filtered = processed.output;
                 println!("{}", filtered);
                 if let Some(hint) = tee_hint {
                     println!("{}", hint);
                 }
 
-                timer.track(
-                    &raw_command,
-                    &format!("rtk:toml {}", raw_command),
-                    &combined_raw,
-                    &filtered,
-                );
+                if let Some(feature) = processed.feature {
+                    timer.track_with_feature(
+                        &raw_command,
+                        &format!("rtk:toml {}", raw_command),
+                        &combined_raw,
+                        &filtered,
+                        feature,
+                    );
+                } else {
+                    timer.track(
+                        &raw_command,
+                        &format!("rtk:toml {}", raw_command),
+                        &combined_raw,
+                        &filtered,
+                    );
+                }
                 core::tracking::record_parse_failure_silent(&raw_command, &error_message, true);
 
                 Ok(exit_code)
@@ -1297,6 +1317,15 @@ fn run_fallback(parse_error: clap::Error) -> Result<i32> {
             }
         }
     }
+}
+
+fn apply_toml_fallback_postprocessors(input: &str) -> core::postprocess::PostprocessResult {
+    let processors = [
+        core::postprocess::PostprocessKind::PackageInstall,
+        core::postprocess::PostprocessKind::Stacktrace,
+        core::postprocess::PostprocessKind::BuildGroup,
+    ];
+    core::postprocess::apply_postprocessors(input, &processors)
 }
 
 #[derive(Debug, Subcommand)]
@@ -2023,6 +2052,8 @@ fn run_cli() -> Result<i32> {
 
         Commands::Curl { args } => curl_cmd::run(&args, cli.verbose)?,
 
+        Commands::Web { url } => web_cmd::run(&url, cli.verbose)?,
+
         Commands::Discover {
             project,
             limit,
@@ -2527,6 +2558,25 @@ fn is_operational_command(cmd: &Commands) -> bool {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn test_toml_fallback_postprocessor_feature_is_preserved() {
+        let input = "Requirement already satisfied: requests in /tmp/site-packages\nUsing cached certifi-2023.7.22-py3-none-any.whl\nSuccessfully installed flask-2.3.3";
+        let result = apply_toml_fallback_postprocessors(input);
+
+        assert_eq!(result.feature, Some("pkg-install"));
+        assert!(!result.output.to_lowercase().contains("already satisfied"));
+        assert!(result.output.contains("Successfully installed flask-2.3.3"));
+    }
+
+    #[test]
+    fn test_toml_fallback_postprocessor_feature_none_when_unchanged() {
+        let input = "plain command output\nno package, stacktrace, or build grouping";
+        let result = apply_toml_fallback_postprocessors(input);
+
+        assert_eq!(result.feature, None);
+        assert_eq!(result.output, input);
+    }
 
     #[test]
     fn test_git_commit_single_message() {
