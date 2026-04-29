@@ -7,9 +7,10 @@ use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
 use super::constants::{
-    BEFORE_TOOL_KEY, CLAUDE_DIR, CLAUDE_HOOK_COMMAND, CLAUDE_SESSION_HOOK_COMMAND, CODEX_DIR,
-    CURSOR_HOOK_COMMAND, GEMINI_HOOK_FILE, HOOKS_JSON, HOOKS_SUBDIR, PRE_TOOL_USE_KEY,
-    REWRITE_HOOK_FILE, SESSION_END_KEY, SETTINGS_JSON,
+    BEFORE_TOOL_KEY, CLAUDE_DIR, CLAUDE_HOOK_COMMAND, CLAUDE_SESSION_HOOK_COMMAND,
+    CLAUDE_STOP_HOOK_COMMAND, CODEX_DIR, CODEX_SESSION_HOOK_COMMAND, CURSOR_HOOK_COMMAND,
+    GEMINI_HOOK_FILE, HOOKS_JSON, HOOKS_SUBDIR, PRE_TOOL_USE_KEY, REWRITE_HOOK_FILE,
+    SESSION_END_KEY, SETTINGS_JSON, STOP_KEY,
 };
 use super::integrity;
 
@@ -249,8 +250,10 @@ pub fn run(
         if matches!(patch_mode, PatchMode::Skip) {
             anyhow::bail!("--codex cannot be combined with --no-patch");
         }
-        return run_codex_mode(global, verbose);
+        return run_codex_mode(global, session_compaction, verbose);
     }
+
+    let session_compaction = session_compaction || (global && install_claude && !claude_md);
 
     // Validation: Global-only features
     if install_opencode && !global {
@@ -478,13 +481,17 @@ fn remove_hook_from_json(root: &mut serde_json::Value) -> bool {
     {
         Some(pre_tool_use) => pre_tool_use,
         None => {
+            let mut removed = false;
+            if let Some(stop) = root.get_mut("hooks").and_then(|h| h.get_mut(STOP_KEY)) {
+                removed |= remove_session_hook_entries(stop);
+            }
             if let Some(session_end) = root
                 .get_mut("hooks")
                 .and_then(|h| h.get_mut(SESSION_END_KEY))
             {
-                return remove_session_hook_entries(session_end);
+                removed |= remove_session_hook_entries(session_end);
             }
-            return false;
+            return removed;
         }
     };
 
@@ -515,6 +522,9 @@ fn remove_hook_from_json(root: &mut serde_json::Value) -> bool {
     {
         removed |= remove_session_hook_entries(session_end);
     }
+    if let Some(stop) = root.get_mut("hooks").and_then(|h| h.get_mut(STOP_KEY)) {
+        removed |= remove_session_hook_entries(stop);
+    }
     removed
 }
 
@@ -529,7 +539,15 @@ fn remove_session_hook_entries(session_end: &mut serde_json::Value) -> bool {
                 if hook
                     .get("command")
                     .and_then(|c| c.as_str())
-                    .is_some_and(|cmd| cmd == CLAUDE_SESSION_HOOK_COMMAND)
+                    .is_some_and(|cmd| {
+                        matches!(
+                            cmd,
+                            CLAUDE_SESSION_HOOK_COMMAND
+                                | CLAUDE_STOP_HOOK_COMMAND
+                                | CODEX_SESSION_HOOK_COMMAND
+                                | "rtk session hook"
+                        )
+                    })
                 {
                     return false;
                 }
@@ -946,20 +964,29 @@ fn patch_session_compaction_hook(mode: PatchMode, verbose: u8) -> Result<PatchRe
         serde_json::to_string_pretty(&root).context("Failed to serialize settings.json")?;
     atomic_write(&settings_path, &serialized)?;
     println!("  settings.json: session compaction hook added");
+    println!("  Stop: {}", CLAUDE_STOP_HOOK_COMMAND);
     println!("  SessionEnd: {}", CLAUDE_SESSION_HOOK_COMMAND);
     Ok(PatchResult::Patched)
 }
 
 fn print_session_manual_instructions() {
-    println!("\n  MANUAL STEP: Add this SessionEnd hook to ~/.claude/settings.json:");
+    println!("\n  MANUAL STEP: Add these hooks to ~/.claude/settings.json:");
     println!("  {{");
-    println!("    \"hooks\": {{ \"SessionEnd\": [{{");
-    println!("      \"matcher\": \"clear|resume|logout|prompt_input_exit|bypass_permissions_disabled|other\",");
+    println!("    \"hooks\": {{");
+    println!("      \"Stop\": [{{");
     println!(
-        "      \"hooks\": [{{ \"type\": \"command\", \"command\": \"{}\", \"timeout\": 10 }}]",
+        "        \"hooks\": [{{ \"type\": \"command\", \"command\": \"{}\", \"timeout\": 10 }}]",
+        CLAUDE_STOP_HOOK_COMMAND
+    );
+    println!("      }}],");
+    println!("      \"SessionEnd\": [{{");
+    println!("        \"matcher\": \"clear|resume|logout|prompt_input_exit|bypass_permissions_disabled|other\",");
+    println!(
+        "        \"hooks\": [{{ \"type\": \"command\", \"command\": \"{}\", \"timeout\": 10 }}]",
         CLAUDE_SESSION_HOOK_COMMAND
     );
-    println!("    }}] }}");
+    println!("      }}]");
+    println!("    }}");
     println!("  }}");
 }
 
@@ -976,36 +1003,70 @@ fn insert_session_hook_entry(root: &mut serde_json::Value) -> Result<()> {
         .or_insert_with(|| serde_json::json!({}))
         .as_object_mut()
         .context("hooks value is not an object")?;
+    let stop = hooks
+        .entry(STOP_KEY)
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()
+        .context("Stop value is not an array")?;
+    if !stop
+        .iter()
+        .any(|entry| entry_contains_command(entry, CLAUDE_STOP_HOOK_COMMAND))
+    {
+        stop.push(serde_json::json!({
+            "hooks": [{
+                "type": "command",
+                "command": CLAUDE_STOP_HOOK_COMMAND,
+                "timeout": 10
+            }]
+        }));
+    }
     let session_end = hooks
         .entry(SESSION_END_KEY)
         .or_insert_with(|| serde_json::json!([]))
         .as_array_mut()
         .context("SessionEnd value is not an array")?;
-    session_end.push(serde_json::json!({
-        "matcher": "clear|resume|logout|prompt_input_exit|bypass_permissions_disabled|other",
-        "hooks": [{
-            "type": "command",
-            "command": CLAUDE_SESSION_HOOK_COMMAND,
-            "timeout": 10
-        }]
-    }));
+    if !session_end
+        .iter()
+        .any(|entry| entry_contains_command(entry, CLAUDE_SESSION_HOOK_COMMAND))
+    {
+        session_end.push(serde_json::json!({
+            "matcher": "clear|resume|logout|prompt_input_exit|bypass_permissions_disabled|other",
+            "hooks": [{
+                "type": "command",
+                "command": CLAUDE_SESSION_HOOK_COMMAND,
+                "timeout": 10
+            }]
+        }));
+    }
     Ok(())
 }
 
 fn session_hook_already_present(root: &serde_json::Value) -> bool {
-    let Some(session_end_array) = root
-        .get("hooks")
-        .and_then(|h| h.get(SESSION_END_KEY))
+    hook_command_present(root, STOP_KEY, CLAUDE_STOP_HOOK_COMMAND)
+        && (hook_command_present(root, SESSION_END_KEY, CLAUDE_SESSION_HOOK_COMMAND)
+            || hook_command_present(root, SESSION_END_KEY, "rtk session hook"))
+}
+
+fn hook_command_present(root: &serde_json::Value, event: &str, command: &str) -> bool {
+    root.get("hooks")
+        .and_then(|h| h.get(event))
         .and_then(|p| p.as_array())
-    else {
-        return false;
-    };
-    session_end_array
-        .iter()
-        .filter_map(|entry| entry.get("hooks")?.as_array())
+        .map(|entries| {
+            entries
+                .iter()
+                .any(|entry| entry_contains_command(entry, command))
+        })
+        .unwrap_or(false)
+}
+
+fn entry_contains_command(entry: &serde_json::Value, command: &str) -> bool {
+    entry
+        .get("hooks")
+        .and_then(|h| h.as_array())
+        .into_iter()
         .flatten()
         .filter_map(|hook| hook.get("command")?.as_str())
-        .any(|cmd| cmd == CLAUDE_SESSION_HOOK_COMMAND)
+        .any(|cmd| cmd == command)
 }
 
 /// Check if RTK hook is already present in settings.json
@@ -1577,7 +1638,7 @@ fn run_antigravity_mode_at(base_dir: &Path, verbose: u8) -> Result<()> {
     Ok(())
 }
 
-fn run_codex_mode(global: bool, verbose: u8) -> Result<()> {
+fn run_codex_mode(global: bool, session_compaction: bool, verbose: u8) -> Result<()> {
     let (agents_md_path, rtk_md_path) = if global {
         let codex_dir = resolve_codex_dir()?;
         (codex_dir.join(AGENTS_MD), codex_dir.join(RTK_MD))
@@ -1585,13 +1646,20 @@ fn run_codex_mode(global: bool, verbose: u8) -> Result<()> {
         (PathBuf::from(AGENTS_MD), PathBuf::from(RTK_MD))
     };
 
-    run_codex_mode_with_paths(agents_md_path, rtk_md_path, global, verbose)
+    run_codex_mode_with_paths(
+        agents_md_path,
+        rtk_md_path,
+        global,
+        session_compaction,
+        verbose,
+    )
 }
 
 fn run_codex_mode_with_paths(
     agents_md_path: PathBuf,
     rtk_md_path: PathBuf,
     global: bool,
+    session_compaction: bool,
     verbose: u8,
 ) -> Result<()> {
     if global {
@@ -1639,8 +1707,75 @@ fn run_codex_mode_with_paths(
             agents_md_path.display()
         );
     }
+    if session_compaction {
+        patch_codex_session_compaction_hook(verbose)?;
+    }
 
     Ok(())
+}
+
+fn patch_codex_session_compaction_hook(verbose: u8) -> Result<PatchResult> {
+    let codex_dir = resolve_codex_dir()?;
+    fs::create_dir_all(&codex_dir)
+        .with_context(|| format!("Failed to create Codex config dir: {}", codex_dir.display()))?;
+    let hooks_path = codex_dir.join(HOOKS_JSON);
+    let mut root = if hooks_path.exists() {
+        let content = fs::read_to_string(&hooks_path)
+            .with_context(|| format!("Failed to read {}", hooks_path.display()))?;
+        if content.trim().is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(&content)
+                .with_context(|| format!("Failed to parse {} as JSON", hooks_path.display()))?
+        }
+    } else {
+        serde_json::json!({})
+    };
+
+    if hook_command_present(&root, STOP_KEY, CODEX_SESSION_HOOK_COMMAND) {
+        if verbose > 0 {
+            eprintln!("hooks.json: Codex session compaction hook already present");
+        }
+        println!("  Codex hooks.json: session compaction hook already present");
+        return Ok(PatchResult::AlreadyPresent);
+    }
+
+    let root_obj = match root.as_object_mut() {
+        Some(obj) => obj,
+        None => {
+            root = serde_json::json!({});
+            root.as_object_mut().expect("just-created json object")
+        }
+    };
+    let hooks = root_obj
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .context("hooks value is not an object")?;
+    let stop = hooks
+        .entry(STOP_KEY)
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()
+        .context("Stop value is not an array")?;
+    stop.push(serde_json::json!({
+        "hooks": [{
+            "type": "command",
+            "command": CODEX_SESSION_HOOK_COMMAND,
+            "timeout": 10
+        }]
+    }));
+
+    if hooks_path.exists() {
+        let backup_path = hooks_path.with_extension("json.bak");
+        fs::copy(&hooks_path, &backup_path)
+            .with_context(|| format!("Failed to backup to {}", backup_path.display()))?;
+    }
+    let serialized =
+        serde_json::to_string_pretty(&root).context("Failed to serialize hooks.json")?;
+    atomic_write(&hooks_path, &serialized)?;
+    println!("  Codex hooks.json: session compaction hook added");
+    println!("  Stop: {}", CODEX_SESSION_HOOK_COMMAND);
+    Ok(PatchResult::Patched)
 }
 
 // --- upsert_rtk_block: idempotent RTK block management ---
@@ -3168,7 +3303,7 @@ More notes
         let agents_md = temp.path().join("AGENTS.md");
         let rtk_md = temp.path().join("RTK.md");
 
-        run_codex_mode_with_paths(agents_md.clone(), rtk_md.clone(), true, 0).unwrap();
+        run_codex_mode_with_paths(agents_md.clone(), rtk_md.clone(), true, false, 0).unwrap();
 
         assert!(rtk_md.exists());
         assert_eq!(fs::read_to_string(&rtk_md).unwrap(), RTK_SLIM_CODEX);
@@ -3901,7 +4036,9 @@ More notes
             let settings = fs::read_to_string(claude_dir.join(SETTINGS_JSON)).unwrap();
             assert_eq!(settings.matches(CLAUDE_HOOK_COMMAND).count(), 1);
             assert_eq!(settings.matches(CLAUDE_SESSION_HOOK_COMMAND).count(), 1);
+            assert_eq!(settings.matches(CLAUDE_STOP_HOOK_COMMAND).count(), 1);
             assert!(settings.contains(SESSION_END_KEY));
+            assert!(settings.contains(STOP_KEY));
         });
     }
 
@@ -3916,6 +4053,7 @@ More notes
                 fs::read_to_string(claude_dir.join(SETTINGS_JSON)).unwrap_or_default();
             assert!(!settings_content.contains(CLAUDE_HOOK_COMMAND));
             assert!(!settings_content.contains(CLAUDE_SESSION_HOOK_COMMAND));
+            assert!(!settings_content.contains(CLAUDE_STOP_HOOK_COMMAND));
         });
     }
 

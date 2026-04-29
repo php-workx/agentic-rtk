@@ -232,4 +232,3 @@ RTK supports AI coding assistants that developers actually use day-to-day. To ad
 ### Maintenance
 
 If an agent's API changes and the hook breaks, the integration should be updated promptly. If the agent becomes unmaintained or the hook can't be fixed, the integration may be deprecated with a release note.
-

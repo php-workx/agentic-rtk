@@ -31,7 +31,7 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Compute version from commits like release please   
+      - name: Compute version from commits like release please
         id: tag
         run: |
           LATEST_TAG=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | grep -v '-' | head -1)

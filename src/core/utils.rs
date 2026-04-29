@@ -340,6 +340,9 @@ pub fn resolved_command(name: &str) -> Command {
     match resolve_binary(name) {
         Ok(path) => Command::new(path),
         Err(e) => {
+            #[cfg(all(not(target_os = "windows"), not(debug_assertions)))]
+            let _ = &e;
+
             // On Windows, resolution failure likely means a .CMD/.BAT wrapper
             // wasn't found — always warn so users have a signal.
             // On Unix, this is less common; only log in debug builds.

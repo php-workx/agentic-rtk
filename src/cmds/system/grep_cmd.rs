@@ -74,10 +74,8 @@ pub fn run(
         return Ok(exit_code);
     }
 
-    // Always filter: truncate long lines, apply per-file and global caps.
-    // Output in standard file:line:content format that AI agents can parse.
-    // (A passthrough approach yields 0% savings — no reason for RTK to exist on that path.)
-    let total_matches = result.stdout.lines().count();
+    let mut matches = Vec::new();
+    let mut total = 0;
 
     let context_re = if context_only {
         Regex::new(&format!("(?i).{{0,20}}{}.*", regex::escape(pattern))).ok()
@@ -85,7 +83,6 @@ pub fn run(
         None
     };
 
-    let mut by_file: HashMap<String, Vec<(usize, String)>> = HashMap::new();
     for line in result.stdout.lines() {
         let parts: Vec<&str> = line.splitn(3, ':').collect();
 
@@ -99,40 +96,17 @@ pub fn run(
             continue;
         };
 
+        total += 1;
         let cleaned = clean_line(content, max_line_len, context_re.as_ref(), pattern);
-        by_file.entry(file).or_default().push((line_num, cleaned));
+        matches.push((file, line_num, cleaned));
     }
 
-    let mut rtk_output = String::new();
-    rtk_output.push_str(&format!(
-        "{} matches in {} files:\n\n",
-        total_matches,
-        by_file.len()
-    ));
-
-    let mut shown = 0;
-    let mut files: Vec<_> = by_file.iter().collect();
-    files.sort_by_key(|(f, _)| *f);
-
-    let per_file = config::limits().grep_max_per_file;
-    for (file, matches) in files {
-        if shown >= max_results {
-            break;
-        }
-
-        let file_display = compact_path(file);
-        for (line_num, content) in matches.iter().take(per_file) {
-            if shown >= max_results {
-                break;
-            }
-            rtk_output.push_str(&format!("{}:{}:{}\n", file_display, line_num, content));
-            shown += 1;
-        }
-    }
-
-    if total_matches > shown {
-        rtk_output.push_str(&format!("[+{} more]\n", total_matches - shown));
-    }
+    let rtk_output = render_grouped_matches(
+        matches,
+        total,
+        max_results,
+        config::limits().grep_max_per_file,
+    );
 
     print!("{}", rtk_output);
     timer.track(
@@ -207,6 +181,76 @@ fn compact_path(path: &str) -> String {
         parts[parts.len() - 2],
         parts[parts.len() - 1]
     )
+}
+
+fn render_grouped_matches(
+    matches: Vec<(String, usize, String)>,
+    total: usize,
+    max_results: usize,
+    per_file: usize,
+) -> String {
+    let mut by_file: HashMap<String, Vec<(usize, String)>> = HashMap::new();
+    for (file, line_num, content) in matches {
+        by_file.entry(file).or_default().push((line_num, content));
+    }
+
+    let mut rtk_output = String::new();
+    rtk_output.push_str(&format!("{} matches in {}F:\n\n", total, by_file.len()));
+
+    let mut shown = 0;
+    let mut files: Vec<_> = by_file.iter().collect();
+    files.sort_by_key(|(f, _)| *f);
+
+    for (file, matches) in files {
+        if shown >= max_results {
+            break;
+        }
+
+        let file_display = compact_path(file);
+        rtk_output.push_str(&format!("[file] {} ({}):\n", file_display, matches.len()));
+
+        let visible_count = per_file.min(matches.len()).min(max_results - shown);
+        let groups = group_visible_matches(&matches[..visible_count]);
+        for group in groups {
+            rtk_output.push_str(&format!("  {}: {}\n", group.line_numbers.join(","), group.content));
+        }
+        shown += visible_count;
+
+        if matches.len() > per_file {
+            rtk_output.push_str(&format!("  +{}\n", matches.len() - per_file));
+        }
+        rtk_output.push('\n');
+    }
+
+    if total > shown {
+        rtk_output.push_str(&format!("... +{}\n", total - shown));
+    }
+
+    rtk_output
+}
+
+struct MatchGroup {
+    content: String,
+    line_numbers: Vec<String>,
+}
+
+fn group_visible_matches(matches: &[(usize, String)]) -> Vec<MatchGroup> {
+    let mut groups: Vec<MatchGroup> = Vec::new();
+    let mut by_content: HashMap<String, usize> = HashMap::new();
+
+    for (line_num, content) in matches {
+        if let Some(index) = by_content.get(content) {
+            groups[*index].line_numbers.push(line_num.to_string());
+        } else {
+            by_content.insert(content.clone(), groups.len());
+            groups.push(MatchGroup {
+                content: content.clone(),
+                line_numbers: vec![line_num.to_string()],
+            });
+        }
+    }
+
+    groups
 }
 
 #[cfg(test)]
@@ -329,5 +373,72 @@ mod tests {
             );
         }
         // If rg is not installed, skip gracefully (test still passes)
+    }
+
+    #[test]
+    fn test_repeated_identical_matches_collapse_line_numbers() {
+        let matches = vec![
+            ("src/lib.rs".to_string(), 10, "let value = 1;".to_string()),
+            ("src/lib.rs".to_string(), 14, "let value = 1;".to_string()),
+            ("src/lib.rs".to_string(), 20, "let other = 2;".to_string()),
+        ];
+
+        let output = render_grouped_matches(matches, 3, 100, 10);
+
+        assert!(output.contains("[file] src/lib.rs (3):"));
+        assert!(output.contains("10,14: let value = 1;"));
+        assert!(output.contains("20: let other = 2;"));
+    }
+
+    #[test]
+    fn test_unique_matches_are_not_collapsed() {
+        let matches = vec![
+            ("src/lib.rs".to_string(), 10, "alpha".to_string()),
+            ("src/lib.rs".to_string(), 14, "beta".to_string()),
+        ];
+
+        let output = render_grouped_matches(matches, 2, 100, 10);
+
+        assert!(output.contains("10: alpha"));
+        assert!(output.contains("14: beta"));
+        assert!(!output.contains("10,14"));
+    }
+
+    #[test]
+    fn test_grouped_grep_omitted_count_uses_true_total() {
+        let matches: Vec<_> = (1..=25)
+            .map(|line| ("src/lib.rs".to_string(), line, format!("match {line}")))
+            .collect();
+
+        let output = render_grouped_matches(matches, 25, 10, 20);
+
+        assert!(output.contains("... +15"));
+    }
+
+    #[test]
+    fn test_grouped_grep_repeated_output_saves_at_least_40_percent() {
+        let matches: Vec<_> = (1..=50)
+            .map(|line| {
+                (
+                    "src/lib.rs".to_string(),
+                    line,
+                    "repeated diagnostic text".to_string(),
+                )
+            })
+            .collect();
+        let raw = (1..=50)
+            .map(|line| format!("src/lib.rs:{line}:repeated diagnostic text"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let output = render_grouped_matches(matches, 50, 100, 100);
+        let savings = 1.0 - (output.len() as f64 / raw.len() as f64);
+
+        assert!(
+            savings >= 0.40,
+            "expected at least 40% savings, got {:.1}%\n{}",
+            savings * 100.0,
+            output
+        );
     }
 }

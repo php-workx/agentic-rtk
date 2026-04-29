@@ -387,6 +387,7 @@ impl Tracker {
         Ok(tracker)
     }
 
+    #[cfg(test)]
     fn init_schema(&self) -> Result<()> {
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS commands (
@@ -399,7 +400,8 @@ impl Tracker {
                 saved_tokens INTEGER NOT NULL,
                 savings_pct REAL NOT NULL,
                 exec_time_ms INTEGER DEFAULT 0,
-                project_path TEXT DEFAULT ''
+                project_path TEXT DEFAULT '',
+                feature TEXT DEFAULT 'cli'
             )",
             [],
         )?;
@@ -409,6 +411,10 @@ impl Tracker {
         )?;
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_project_path_timestamp ON commands(project_path, timestamp)",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feature_timestamp ON commands(feature, timestamp)",
             [],
         )?;
         self.conn.execute(
@@ -1564,6 +1570,12 @@ pub fn args_display(args: &[OsString]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn db_path_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     // 1. estimate_tokens — verify ~4 chars/token ratio
     #[test]
@@ -1735,18 +1747,34 @@ mod tests {
         static ENV_LOCK: Mutex<()> = Mutex::new(());
         let _guard = ENV_LOCK.lock().unwrap();
 
+        let _guard = db_path_env_lock().lock().unwrap();
         let custom_path = env::temp_dir().join("rtk_test_custom.db");
         env::set_var("RTK_DB_PATH", &custom_path);
         let db_path = get_db_path().expect("Failed to get db path");
         assert_eq!(db_path, custom_path);
 
         env::remove_var("RTK_DB_PATH");
+    }
+
+    // 8. get_db_path falls back to default when no custom env/config path exists
+    #[test]
+    fn test_default_db_path() {
+        use std::env;
+
+        let _guard = db_path_env_lock().lock().unwrap();
+        // Ensure no env var is set
+        env::remove_var("RTK_DB_PATH");
+
         let db_path = get_db_path().expect("Failed to get db path");
-        assert!(
-            db_path.ends_with("rtk/history.db"),
-            "expected default path ending with rtk/history.db, got: {}",
-            db_path.display()
-        );
+        if let Some(configured_path) = crate::core::config::Config::load()
+            .ok()
+            .and_then(|config| config.tracking.database_path)
+        {
+            assert_eq!(db_path, configured_path);
+        } else {
+            let data_dir = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
+            assert_eq!(db_path, data_dir.join(RTK_DATA_DIR).join(HISTORY_DB));
+        }
     }
 
     // 9. project_filter_params uses GLOB pattern with * wildcard // added

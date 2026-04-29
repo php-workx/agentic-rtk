@@ -92,7 +92,7 @@ enum Commands {
         /// Files to read (supports multiple, like cat)
         #[arg(required = true, num_args = 1..)]
         files: Vec<PathBuf>,
-        /// Filter: none (default, full content), minimal, aggressive
+        /// Filter: none (default, full content), whitespace, minimal, aggressive
         #[arg(short, long, default_value = "none")]
         level: core::filter::FilterLevel,
         /// Max lines
@@ -787,14 +787,70 @@ enum HookCommands {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SessionAgentArg {
+    Auto,
+    Claude,
+    Codex,
+}
+
+impl From<SessionAgentArg> for session::SessionAgent {
+    fn from(value: SessionAgentArg) -> Self {
+        match value {
+            SessionAgentArg::Auto => Self::Auto,
+            SessionAgentArg::Claude => Self::Claude,
+            SessionAgentArg::Codex => Self::Codex,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SessionHookEventArg {
+    Stop,
+    SessionEnd,
+}
+
+impl From<SessionHookEventArg> for session::HookEvent {
+    fn from(value: SessionHookEventArg) -> Self {
+        match value {
+            SessionHookEventArg::Stop => Self::Stop,
+            SessionHookEventArg::SessionEnd => Self::SessionEnd,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SessionCacheProviderArg {
+    Openai,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SessionCacheBenchModeArg {
+    Offline,
+    Live,
+}
+
+fn provider_label(provider: SessionCacheProviderArg) -> &'static str {
+    match provider {
+        SessionCacheProviderArg::Openai => "openai",
+    }
+}
+
+fn cache_bench_mode_label(mode: SessionCacheBenchModeArg) -> &'static str {
+    match mode {
+        SessionCacheBenchModeArg::Offline => "offline",
+        SessionCacheBenchModeArg::Live => "live",
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum SessionCommands {
-    /// Compact a Claude Code session JSONL into a sidecar or apply it immediately
+    /// Compact a Claude or Codex session JSONL into a sidecar or apply it immediately
     Compact {
-        /// Session id (looked up under ~/.claude/projects/) or full .jsonl path
+        /// Session id or full .jsonl path
         #[arg(required_unless_present = "all")]
         target: Option<String>,
-        /// Compact every top-level session under ~/.claude/projects
+        /// Compact every discoverable session for the selected agent
         #[arg(long)]
         all: bool,
         /// Print stats without writing a sidecar or applying
@@ -806,6 +862,12 @@ enum SessionCommands {
         /// With --all, only compact sessions older than this duration (e.g. 30m, 2h, 7d)
         #[arg(long)]
         older_than: Option<String>,
+        /// Transcript agent format
+        #[arg(long, default_value = "auto")]
+        agent: SessionAgentArg,
+        /// Print exact-prefix cache stability metrics
+        #[arg(long)]
+        explain_cache: bool,
     },
     /// Apply an existing .compressed sidecar with a managed backup
     Apply {
@@ -827,10 +889,29 @@ enum SessionCommands {
     Status {
         /// Session id or full .jsonl path
         target: String,
+        /// Transcript agent format
+        #[arg(long, default_value = "auto")]
+        agent: SessionAgentArg,
     },
-    /// Claude Code SessionEnd hook entrypoint
+    /// Compare stable-prefix behavior across synthetic turns
+    CacheBench {
+        /// Provider model for cache semantics
+        #[arg(long, default_value = "openai")]
+        provider: SessionCacheProviderArg,
+        /// Offline prefix-hash simulation or optional live API check
+        #[arg(long, default_value = "offline")]
+        mode: SessionCacheBenchModeArg,
+    },
+    /// Session hook entrypoint
     #[command(hide = true)]
-    Hook,
+    Hook {
+        /// Transcript agent format
+        #[arg(long, default_value = "claude")]
+        agent: SessionAgentArg,
+        /// Hook event this invocation handles
+        #[arg(long, default_value = "session-end")]
+        event: SessionHookEventArg,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -2074,12 +2155,16 @@ fn run_cli() -> Result<i32> {
                     dry_run,
                     apply,
                     older_than,
+                    agent,
+                    explain_cache,
                 }) => session::run_compact(
                     target.as_deref(),
                     all,
                     dry_run,
                     apply,
                     older_than.as_deref(),
+                    agent.into(),
+                    explain_cache,
                     cli.verbose,
                 )?,
                 Some(SessionCommands::Apply { target }) => {
@@ -2090,8 +2175,16 @@ fn run_cli() -> Result<i32> {
                     latest,
                     backup,
                 }) => session::run_expand(&target, backup.as_deref(), latest, cli.verbose)?,
-                Some(SessionCommands::Status { target }) => session::run_status(&target)?,
-                Some(SessionCommands::Hook) => session::run_hook()?,
+                Some(SessionCommands::Status { target, agent }) => {
+                    session::run_status(&target, agent.into())?
+                }
+                Some(SessionCommands::CacheBench { provider, mode }) => session::run_cache_bench(
+                    provider_label(provider),
+                    cache_bench_mode_label(mode),
+                )?,
+                Some(SessionCommands::Hook { agent, event }) => {
+                    session::run_hook(agent.into(), event.into())?
+                }
             }
             0
         }

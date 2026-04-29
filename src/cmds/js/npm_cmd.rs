@@ -124,6 +124,7 @@ fn run_filtered(name: &str, args: &[String], verbose: u8, skip_env: bool) -> Res
         eprintln!("Running: {} {}", name, args_display);
     }
 
+    let first_arg = args.first().map(String::as_str);
     let is_package_install = matches!(first_arg, Some("install" | "i" | "ci" | "update" | "up"));
     let opts = if is_package_install {
         runner::RunOptions::default()

@@ -1,0 +1,55 @@
+# Pre-commit hooks: https://pre-commit.com
+# Install: just install-hooks
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+
+  - repo: https://github.com/betterleaks/betterleaks
+    rev: v1.1.2
+    hooks:
+      - id: betterleaks-system
+        pass_filenames: false
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all -- --check
+        language: system
+        pass_filenames: false
+        files: '(^|/)(.*\.rs|Cargo\.toml|Cargo\.lock)$'
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --all-targets -- -D warnings
+        language: system
+        pass_filenames: false
+        files: '(^|/)(.*\.rs|Cargo\.toml|Cargo\.lock)$'
+
+      - id: cargo-test
+        name: cargo test
+        entry: cargo test
+        language: system
+        pass_filenames: false
+        files: '(^|/)(.*\.rs|Cargo\.toml|Cargo\.lock)$'
+
+      - id: cargo-audit
+        name: cargo audit
+        entry: cargo audit
+        language: system
+        pass_filenames: false
+        files: '(^|/)(Cargo\.toml|Cargo\.lock)$'
+
+      - id: semgrep
+        name: semgrep
+        entry: semgrep scan --config auto .
+        language: system
+        pass_filenames: false

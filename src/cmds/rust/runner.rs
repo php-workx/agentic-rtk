@@ -156,7 +156,10 @@ fn extract_test_summary(output: &str, command: &str) -> String {
     let is_cargo = command.contains("cargo test");
     let is_pytest = command.contains("pytest");
     let is_jest =
-        command.contains("jest") || command.contains("npm test") || command.contains("yarn test");
+        command.contains("jest")
+            || command.contains("npm test")
+            || command.contains("pnpm test")
+            || command.contains("yarn test");
     let is_go = command.contains("go test");
 
     let mut failures = Vec::new();
@@ -280,5 +283,15 @@ mod tests {
         let fallback = err_failure_fallback("error: real failure", "raw output", 1);
 
         assert!(fallback.is_none());
+    }
+
+    #[test]
+    fn test_extract_test_summary_detects_pnpm_test() {
+        let output = "PASS src/app.test.ts\nTests:       4 passed, 4 total\nTest Suites: 1 passed, 1 total\n";
+        let summary = extract_test_summary(output, "pnpm test");
+
+        assert!(summary.contains("SUMMARY:"));
+        assert!(summary.contains("Tests:       4 passed, 4 total"));
+        assert!(summary.contains("Test Suites: 1 passed, 1 total"));
     }
 }
