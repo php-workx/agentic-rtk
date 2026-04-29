@@ -186,6 +186,7 @@ rtk kubectl logs        # Deduplicated pod logs
 ```bash
 rtk curl <url>          # Compact HTTP responses (70%)
 rtk wget <url>          # Compact download output (65%)
+rtk web <url>           # Extract readable web page text
 ```
 
 ### Meta Commands
@@ -209,7 +210,7 @@ rtk init --global       # Add RTK to ~/.claude/CLAUDE.md
 | Package Managers | pnpm, npm, npx | 70-90% |
 | Files | ls, read, grep, find | 60-75% |
 | Infrastructure | docker, kubectl | 85% |
-| Network | curl, wget | 65-70% |
+| Network | curl, wget, web | 65-70% |
 
 Overall average: **60-90% token reduction** on common development operations.
 <!-- /rtk-instructions -->
@@ -2858,6 +2859,7 @@ mod tests {
             "rtk pnpm",
             "rtk npm",
             "rtk curl",
+            "rtk web",
             "rtk git",
             "rtk docker",
             "rtk kubectl",
