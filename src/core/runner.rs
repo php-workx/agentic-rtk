@@ -3,8 +3,11 @@
 use anyhow::{Context, Result};
 use std::process::Command;
 
+use crate::core::postprocess::{self, PostprocessKind};
 use crate::core::stream::{self, FilterMode, StdinMode, StreamFilter};
 use crate::core::tracking;
+
+type FailureFallback = fn(&str, &str, i32) -> Option<String>;
 
 pub fn print_with_hint(filtered: &str, raw: &str, tee_label: &str, exit_code: i32) {
     if let Some(hint) = crate::core::tee::tee_and_hint(raw, tee_label, exit_code) {
@@ -20,6 +23,8 @@ pub struct RunOptions<'a> {
     pub filter_stdout_only: bool,
     pub skip_filter_on_failure: bool,
     pub no_trailing_newline: bool,
+    pub postprocessors: Vec<PostprocessKind>,
+    pub failure_fallback: Option<FailureFallback>,
 }
 
 impl<'a> RunOptions<'a> {
@@ -49,6 +54,16 @@ impl<'a> RunOptions<'a> {
 
     pub fn no_trailing_newline(mut self) -> Self {
         self.no_trailing_newline = true;
+        self
+    }
+
+    pub fn postprocess(mut self, processors: &[PostprocessKind]) -> Self {
+        self.postprocessors.extend_from_slice(processors);
+        self
+    }
+
+    pub fn failure_fallback(mut self, fallback: FailureFallback) -> Self {
+        self.failure_fallback = Some(fallback);
         self
     }
 }
@@ -94,7 +109,22 @@ pub fn run(
             } else {
                 raw
             };
-            let filtered = filter_fn(text_to_filter);
+            let mut filtered = filter_fn(text_to_filter);
+            let feature = if opts.postprocessors.is_empty() {
+                None
+            } else {
+                let processed = postprocess::apply_postprocessors(&filtered, &opts.postprocessors);
+                filtered = processed.output;
+                processed.feature
+            };
+
+            if exit_code != 0 {
+                if let Some(fallback) = opts.failure_fallback {
+                    if let Some(fallback_output) = fallback(&filtered, raw, exit_code) {
+                        filtered = fallback_output;
+                    }
+                }
+            }
 
             if let Some(label) = opts.tee_label {
                 print_with_hint(&filtered, raw, label, exit_code);
@@ -109,12 +139,22 @@ pub fn run(
             } else {
                 raw
             };
-            timer.track(
-                &cmd_label,
-                &format!("rtk {}", cmd_label),
-                raw_for_tracking,
-                &filtered,
-            );
+            if let Some(feature) = feature {
+                timer.track_with_feature(
+                    &cmd_label,
+                    &format!("rtk {}", cmd_label),
+                    raw_for_tracking,
+                    &filtered,
+                    feature,
+                );
+            } else {
+                timer.track(
+                    &cmd_label,
+                    &format!("rtk {}", cmd_label),
+                    raw_for_tracking,
+                    &filtered,
+                );
+            }
             Ok(exit_code)
         }
         RunMode::Streamed(filter) => {
