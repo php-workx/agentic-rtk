@@ -13,7 +13,7 @@ jobs:
       github.event.pull_request.head.ref != 'develop'
     steps:
       - name: Add wrong-base label
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const pr = context.payload.pull_request;
