@@ -1,10 +1,13 @@
 //! Filters pip and uv package manager output.
 
+use crate::core::postprocess::package_install::compress_pkg_log;
 use crate::core::stream::exec_capture;
 use crate::core::tracking;
 use crate::core::utils::{resolved_command, tool_exists};
 use anyhow::{Context, Result};
 use serde::Deserialize;
+
+type PipRunResult = (String, String, i32, Option<&'static str>);
 
 #[derive(Debug, Deserialize)]
 struct Package {
@@ -28,30 +31,38 @@ pub fn run(args: &[String], verbose: u8) -> Result<i32> {
     // Detect subcommand
     let subcommand = args.first().map(|s| s.as_str()).unwrap_or("");
 
-    let (cmd_str, filtered, exit_code) = match subcommand {
+    let (cmd_str, filtered, exit_code, feature) = match subcommand {
         "list" => run_list(base_cmd, &args[1..], verbose)?,
         "outdated" => run_outdated(base_cmd, &args[1..], verbose)?,
-        "install" | "uninstall" | "show" => {
-            // Passthrough for write operations
-            run_passthrough(base_cmd, args, verbose)?
-        }
+        "install" => run_package_write(base_cmd, args, verbose)?,
+        "uninstall" | "show" => run_passthrough(base_cmd, args, verbose)?,
         _ => {
             // Unknown subcommand: passthrough to pip/uv
             run_passthrough(base_cmd, args, verbose)?
         }
     };
 
-    timer.track(
-        &format!("{} {}", base_cmd, args.join(" ")),
-        &format!("rtk {} {}", base_cmd, args.join(" ")),
-        &cmd_str,
-        &filtered,
-    );
+    if let Some(feature) = feature {
+        timer.track_with_feature(
+            &format!("{} {}", base_cmd, args.join(" ")),
+            &format!("rtk {} {}", base_cmd, args.join(" ")),
+            &cmd_str,
+            &filtered,
+            feature,
+        );
+    } else {
+        timer.track(
+            &format!("{} {}", base_cmd, args.join(" ")),
+            &format!("rtk {} {}", base_cmd, args.join(" ")),
+            &cmd_str,
+            &filtered,
+        );
+    }
 
     Ok(exit_code)
 }
 
-fn run_list(base_cmd: &str, args: &[String], verbose: u8) -> Result<(String, String, i32)> {
+fn run_list(base_cmd: &str, args: &[String], verbose: u8) -> Result<PipRunResult> {
     let mut cmd = resolved_command(base_cmd);
 
     if base_cmd == "uv" {
@@ -76,10 +87,10 @@ fn run_list(base_cmd: &str, args: &[String], verbose: u8) -> Result<(String, Str
     let filtered = filter_pip_list(&result.stdout);
     println!("{}", filtered);
 
-    Ok((raw, filtered, result.exit_code))
+    Ok((raw, filtered, result.exit_code, None))
 }
 
-fn run_outdated(base_cmd: &str, args: &[String], verbose: u8) -> Result<(String, String, i32)> {
+fn run_outdated(base_cmd: &str, args: &[String], verbose: u8) -> Result<PipRunResult> {
     let mut cmd = resolved_command(base_cmd);
 
     if base_cmd == "uv" {
@@ -104,10 +115,10 @@ fn run_outdated(base_cmd: &str, args: &[String], verbose: u8) -> Result<(String,
     let filtered = filter_pip_outdated(&result.stdout);
     println!("{}", filtered);
 
-    Ok((raw, filtered, result.exit_code))
+    Ok((raw, filtered, result.exit_code, None))
 }
 
-fn run_passthrough(base_cmd: &str, args: &[String], verbose: u8) -> Result<(String, String, i32)> {
+fn run_passthrough(base_cmd: &str, args: &[String], verbose: u8) -> Result<PipRunResult> {
     let mut cmd = resolved_command(base_cmd);
 
     if base_cmd == "uv" {
@@ -130,7 +141,37 @@ fn run_passthrough(base_cmd: &str, args: &[String], verbose: u8) -> Result<(Stri
     print!("{}", result.stdout);
     eprint!("{}", result.stderr);
 
-    Ok((raw.clone(), raw, result.exit_code))
+    Ok((raw.clone(), raw, result.exit_code, None))
+}
+
+fn run_package_write(base_cmd: &str, args: &[String], verbose: u8) -> Result<PipRunResult> {
+    let mut cmd = resolved_command(base_cmd);
+
+    if base_cmd == "uv" {
+        cmd.arg("pip");
+    }
+
+    for arg in args {
+        cmd.arg(arg);
+    }
+
+    if verbose > 0 {
+        eprintln!("Running: {} pip {}", base_cmd, args.join(" "));
+    }
+
+    let result = exec_capture(&mut cmd)
+        .with_context(|| format!("Failed to run {} pip {}", base_cmd, args.join(" ")))?;
+
+    let raw = format!("{}\n{}", result.stdout, result.stderr);
+    let filtered = compress_pkg_log(&raw);
+    let feature = package_install_feature(&raw, &filtered);
+    println!("{}", filtered);
+
+    Ok((raw, filtered, result.exit_code, feature))
+}
+
+fn package_install_feature(raw: &str, filtered: &str) -> Option<&'static str> {
+    (raw != filtered).then_some("pkg-install")
 }
 
 /// Filter pip list JSON output
@@ -261,5 +302,20 @@ mod tests {
         assert!(result.contains("2.31.0 → 2.32.0"));
         assert!(result.contains("pytest"));
         assert!(result.contains("7.4.0 → 8.0.0"));
+    }
+
+    #[test]
+    fn test_package_install_feature_when_compressed() {
+        let raw = "Requirement already satisfied: requests in /tmp/site-packages\nUsing cached certifi-2023.7.22-py3-none-any.whl\nSuccessfully installed flask-2.3.3";
+        let filtered = compress_pkg_log(raw);
+
+        assert_eq!(package_install_feature(raw, &filtered), Some("pkg-install"));
+    }
+
+    #[test]
+    fn test_package_install_feature_none_when_unchanged() {
+        let raw = "Name: requests\nVersion: 2.31.0";
+
+        assert_eq!(package_install_feature(raw, raw), None);
     }
 }

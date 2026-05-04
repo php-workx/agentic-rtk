@@ -66,7 +66,7 @@ Core Maintainers are responsible for the core of RTK. They have a broader scope 
 - Defining project direction and standards with the core team
 - Ensuring consistency across the entire project
 - Refactoring for optimization, standardization & conformity
-  
+
 ---
 
 If you enjoy contributing and want to help RTK scale in a healthy way, we'd be excited to have you onboard 🚀

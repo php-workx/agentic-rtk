@@ -1,5 +1,6 @@
 //! Filters pnpm output — dependency trees, install logs, outdated packages.
 
+use crate::core::postprocess::package_install::compress_pkg_log;
 use crate::core::stream::exec_capture;
 use crate::core::tracking;
 use crate::core::utils::resolved_command;
@@ -440,50 +441,44 @@ fn run_install(packages: &[String], args: &[String], verbose: u8) -> Result<i32>
     }
 
     let combined = result.combined();
-    let filtered = filter_pnpm_install(&combined);
+    let filtered = compress_pnpm_install_log(&combined);
 
     println!("{}", filtered);
 
-    timer.track(
-        &format!("pnpm install {}", packages.join(" ")),
-        &format!("rtk pnpm install {}", packages.join(" ")),
-        &combined,
-        &filtered,
-    );
+    if combined != filtered {
+        timer.track_with_feature(
+            &format!("pnpm install {}", packages.join(" ")),
+            &format!("rtk pnpm install {}", packages.join(" ")),
+            &combined,
+            &filtered,
+            "pkg-install",
+        );
+    } else {
+        timer.track(
+            &format!("pnpm install {}", packages.join(" ")),
+            &format!("rtk pnpm install {}", packages.join(" ")),
+            &combined,
+            &filtered,
+        );
+    }
 
     Ok(0)
 }
 
-/// Filter pnpm install output - remove progress bars, keep summary
+fn compress_pnpm_install_log(output: &str) -> String {
+    filter_pnpm_install(&compress_pkg_log(output))
+}
+
+/// Filter pnpm install output - remove progress bars, keep security/package details
 fn filter_pnpm_install(output: &str) -> String {
     let mut result = Vec::new();
-    let mut saw_progress = false;
 
     for line in output.lines() {
-        // Skip progress bars
-        if line.contains("Progress") || line.contains('│') || line.contains('%') {
-            saw_progress = true;
+        if is_pnpm_progress_noise(line) {
             continue;
         }
 
-        if saw_progress && line.trim().is_empty() {
-            continue;
-        }
-
-        // Keep error lines
-        if line.contains("ERR") || line.contains("error") || line.contains("ERROR") {
-            result.push(line.to_string());
-            continue;
-        }
-
-        // Keep summary lines
-        if line.contains("packages in")
-            || line.contains("dependencies")
-            || line.starts_with('+')
-            || line.starts_with('-')
-        {
-            result.push(line.trim().to_string());
-        }
+        result.push(line.to_string());
     }
 
     if result.is_empty() {
@@ -491,6 +486,22 @@ fn filter_pnpm_install(output: &str) -> String {
     } else {
         result.join("\n")
     }
+}
+
+fn is_pnpm_progress_noise(line: &str) -> bool {
+    let trimmed = line.trim();
+
+    if trimmed.starts_with("Progress:") || trimmed.starts_with("Packages:") {
+        return true;
+    }
+
+    !trimmed.is_empty()
+        && trimmed
+            .chars()
+            .all(|c| matches!(c, '+' | '-' | '=' | '#' | '.' | '>' | '<' | ' '))
+        && trimmed
+            .chars()
+            .any(|c| matches!(c, '+' | '=' | '#' | '.' | '>' | '<'))
 }
 
 pub fn run_passthrough(args: &[OsString], verbose: u8) -> Result<i32> {
@@ -548,6 +559,42 @@ mod tests {
         assert!(is_valid_package_name("@clerk/express"));
         assert!(!is_valid_package_name("../../../etc/passwd"));
         assert!(!is_valid_package_name("lodash; rm -rf /"));
+    }
+
+    #[test]
+    fn test_pnpm_install_preserves_vulnerability_summary_and_recommendation() {
+        let input = r#"Progress: resolved 228, reused 226, downloaded 0, added 0
+Packages: +3
+++++++++++++++++++++++++++++++++++++++++++++++++++
+6 vulnerabilities (1 low, 2 moderate, 3 high)
+Severity: 3 high vulnerabilities found
+Run "pnpm audit --fix" to address issues that do not require attention
+Done in 1.2s"#;
+
+        let result = compress_pnpm_install_log(input);
+        assert!(result.contains("[security] 6 vulnerabilities (1 low, 2 moderate, 3 high)"));
+        assert!(result.contains("Severity: 3 high vulnerabilities found"));
+        assert!(result.contains("pnpm audit --fix"));
+        assert!(!result.contains("Progress:"));
+        assert!(!result.contains("++++++++++++++++++++++++++++++++"));
+    }
+
+    #[test]
+    fn test_pnpm_install_preserves_advisory_identifiers() {
+        let input = r#"Progress: resolved 80, reused 80, downloaded 0, added 0
+dependencies:
++ vulnerable-lib 1.0.0
+Audit advisory: vulnerable-lib allows prototype pollution
+CVE-2024-12345
+GHSA-abcd-1234-efgh
+No fix available - review transitive dependency usage"#;
+
+        let result = compress_pnpm_install_log(input);
+        assert!(result.contains("Audit advisory: vulnerable-lib allows prototype pollution"));
+        assert!(result.contains("CVE-2024-12345"));
+        assert!(result.contains("GHSA-abcd-1234-efgh"));
+        assert!(result.contains("No fix available"));
+        assert!(!result.contains("Progress:"));
     }
 
     #[test]

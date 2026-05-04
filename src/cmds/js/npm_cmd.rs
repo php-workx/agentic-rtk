@@ -1,5 +1,6 @@
 //! Filters npm output and auto-injects the "run" subcommand when appropriate.
 
+use crate::core::postprocess::PostprocessKind;
 use crate::core::runner;
 use crate::core::utils::resolved_command;
 use anyhow::Result;
@@ -123,12 +124,21 @@ fn run_filtered(name: &str, args: &[String], verbose: u8, skip_env: bool) -> Res
         eprintln!("Running: {} {}", name, args_display);
     }
 
+    let first_arg = args.first().map(String::as_str);
+    let is_package_install = matches!(first_arg, Some("install" | "i" | "ci" | "update" | "up"));
+    let opts = if is_package_install {
+        runner::RunOptions::default()
+            .postprocess(&[PostprocessKind::PackageInstall, PostprocessKind::Stacktrace])
+    } else {
+        runner::RunOptions::default().postprocess(&[PostprocessKind::Stacktrace])
+    };
+
     runner::run_filtered(
         cmd,
         name,
         &args_display,
         filter_npm_output,
-        runner::RunOptions::default(),
+        opts,
     )
 }
 
@@ -142,7 +152,7 @@ fn filter_npm_output(output: &str) -> String {
             continue;
         }
         // Skip npm lifecycle scripts
-        if line.trim_start().starts_with("npm WARN") {
+        if line.trim_start().starts_with("npm WARN") && !is_security_warning_line(line) {
             continue;
         }
         if line.trim_start().starts_with("npm notice") {
@@ -165,6 +175,23 @@ fn filter_npm_output(output: &str) -> String {
     } else {
         result.join("\n")
     }
+}
+
+fn is_security_warning_line(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    [
+        "vulnerabilit",
+        "security",
+        "critical",
+        "high severity",
+        "breaking",
+        "cve-",
+        "ghsa-",
+        "audit",
+        "malware",
+    ]
+    .iter()
+    .any(|keyword| lower.contains(keyword))
 }
 
 #[cfg(test)]

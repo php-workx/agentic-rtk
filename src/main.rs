@@ -5,9 +5,10 @@ mod discover;
 mod hooks;
 mod learn;
 mod parser;
+mod session;
 
 // Re-export command modules for routing
-use cmds::cloud::{aws_cmd, container, curl_cmd, psql_cmd, wget_cmd};
+use cmds::cloud::{aws_cmd, container, curl_cmd, psql_cmd, web_cmd, wget_cmd};
 use cmds::dotnet::{binlog, dotnet_cmd, dotnet_format_report, dotnet_trx};
 use cmds::git::{diff_cmd, gh_cmd, git, glab_cmd, gt_cmd};
 use cmds::go::{go_cmd, golangci_cmd};
@@ -91,7 +92,7 @@ enum Commands {
         /// Files to read (supports multiple, like cat)
         #[arg(required = true, num_args = 1..)]
         files: Vec<PathBuf>,
-        /// Filter: none (default, full content), minimal, aggressive
+        /// Filter: none (default, full content), whitespace, minimal, aggressive
         #[arg(short, long, default_value = "none")]
         level: core::filter::FilterLevel,
         /// Max lines
@@ -371,6 +372,10 @@ enum Commands {
         /// Install GitHub Copilot integration (VS Code + CLI)
         #[arg(long)]
         copilot: bool,
+
+        /// Add safe Claude Code SessionEnd transcript compaction hook (global Claude mode only)
+        #[arg(long = "session-compaction")]
+        session_compaction: bool,
     },
 
     /// Download with compact output (strips progress bars)
@@ -397,6 +402,9 @@ enum Commands {
         /// Filter statistics to current project (current working directory) // added
         #[arg(short, long)]
         project: bool,
+        /// Show savings grouped by RTK feature area
+        #[arg(short = 'B', long)]
+        by_feature: bool,
         /// Show ASCII graph of daily savings
         #[arg(short, long)]
         graph: bool,
@@ -550,6 +558,12 @@ enum Commands {
         args: Vec<String>,
     },
 
+    /// Fetch a web page and extract readable HTML content
+    Web {
+        /// URL to fetch
+        url: String,
+    },
+
     /// Discover missed RTK savings from Claude Code history
     Discover {
         /// Filter by project path (substring match)
@@ -569,8 +583,11 @@ enum Commands {
         format: String,
     },
 
-    /// Show RTK adoption across Claude Code sessions
-    Session {},
+    /// Show or compact Claude Code sessions
+    Session {
+        #[command(subcommand)]
+        command: Option<SessionCommands>,
+    },
 
     /// Manage telemetry consent and data (RGPD/GDPR)
     Telemetry {
@@ -767,6 +784,133 @@ enum HookCommands {
         /// Command to check
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SessionAgentArg {
+    Auto,
+    Claude,
+    Codex,
+}
+
+impl From<SessionAgentArg> for session::SessionAgent {
+    fn from(value: SessionAgentArg) -> Self {
+        match value {
+            SessionAgentArg::Auto => Self::Auto,
+            SessionAgentArg::Claude => Self::Claude,
+            SessionAgentArg::Codex => Self::Codex,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SessionHookEventArg {
+    Stop,
+    SessionEnd,
+}
+
+impl From<SessionHookEventArg> for session::HookEvent {
+    fn from(value: SessionHookEventArg) -> Self {
+        match value {
+            SessionHookEventArg::Stop => Self::Stop,
+            SessionHookEventArg::SessionEnd => Self::SessionEnd,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SessionCacheProviderArg {
+    Openai,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SessionCacheBenchModeArg {
+    Offline,
+    Live,
+}
+
+fn provider_label(provider: SessionCacheProviderArg) -> &'static str {
+    match provider {
+        SessionCacheProviderArg::Openai => "openai",
+    }
+}
+
+fn cache_bench_mode_label(mode: SessionCacheBenchModeArg) -> &'static str {
+    match mode {
+        SessionCacheBenchModeArg::Offline => "offline",
+        SessionCacheBenchModeArg::Live => "live",
+    }
+}
+
+#[derive(Debug, Subcommand)]
+enum SessionCommands {
+    /// Compact a Claude or Codex session JSONL into a sidecar or apply it immediately
+    Compact {
+        /// Session id or full .jsonl path
+        #[arg(required_unless_present = "all")]
+        target: Option<String>,
+        /// Compact every discoverable session for the selected agent
+        #[arg(long)]
+        all: bool,
+        /// Print stats without writing a sidecar or applying
+        #[arg(long)]
+        dry_run: bool,
+        /// Apply immediately with a managed backup
+        #[arg(long)]
+        apply: bool,
+        /// With --all, only compact sessions older than this duration (e.g. 30m, 2h, 7d)
+        #[arg(long)]
+        older_than: Option<String>,
+        /// Transcript agent format
+        #[arg(long, default_value = "auto")]
+        agent: SessionAgentArg,
+        /// Print exact-prefix cache stability metrics
+        #[arg(long)]
+        explain_cache: bool,
+    },
+    /// Apply an existing .compressed sidecar with a managed backup
+    Apply {
+        /// Session id or full .jsonl path
+        target: String,
+    },
+    /// Restore a managed backup
+    Expand {
+        /// Session id or full .jsonl path
+        target: String,
+        /// Restore the latest managed backup
+        #[arg(long)]
+        latest: bool,
+        /// Restore a specific backup path
+        #[arg(long)]
+        backup: Option<String>,
+    },
+    /// Show compactability and backup status for a session
+    Status {
+        /// Session id or full .jsonl path
+        target: String,
+        /// Transcript agent format
+        #[arg(long, default_value = "auto")]
+        agent: SessionAgentArg,
+    },
+    /// Compare stable-prefix behavior across synthetic turns
+    CacheBench {
+        /// Provider model for cache semantics
+        #[arg(long, default_value = "openai")]
+        provider: SessionCacheProviderArg,
+        /// Offline prefix-hash simulation or optional live API check
+        #[arg(long, default_value = "offline")]
+        mode: SessionCacheBenchModeArg,
+    },
+    /// Session hook entrypoint
+    #[command(hide = true)]
+    Hook {
+        /// Transcript agent format
+        #[arg(long, default_value = "claude")]
+        agent: SessionAgentArg,
+        /// Hook event this invocation handles
+        #[arg(long, default_value = "session-end")]
+        event: SessionHookEventArg,
     },
 }
 
@@ -1192,18 +1336,32 @@ fn run_fallback(parse_error: clap::Error) -> Result<i32> {
                     None
                 };
 
-                let filtered = core::toml_filter::apply_filter(filter, &combined_raw);
+                let processed = {
+                    let base = core::toml_filter::apply_filter(filter, &combined_raw);
+                    apply_toml_fallback_postprocessors(&base)
+                };
+                let filtered = processed.output;
                 println!("{}", filtered);
                 if let Some(hint) = tee_hint {
                     println!("{}", hint);
                 }
 
-                timer.track(
-                    &raw_command,
-                    &format!("rtk:toml {}", raw_command),
-                    &combined_raw,
-                    &filtered,
-                );
+                if let Some(feature) = processed.feature {
+                    timer.track_with_feature(
+                        &raw_command,
+                        &format!("rtk:toml {}", raw_command),
+                        &combined_raw,
+                        &filtered,
+                        feature,
+                    );
+                } else {
+                    timer.track(
+                        &raw_command,
+                        &format!("rtk:toml {}", raw_command),
+                        &combined_raw,
+                        &filtered,
+                    );
+                }
                 core::tracking::record_parse_failure_silent(&raw_command, &error_message, true);
 
                 Ok(exit_code)
@@ -1240,6 +1398,15 @@ fn run_fallback(parse_error: clap::Error) -> Result<i32> {
             }
         }
     }
+}
+
+fn apply_toml_fallback_postprocessors(input: &str) -> core::postprocess::PostprocessResult {
+    let processors = [
+        core::postprocess::PostprocessKind::PackageInstall,
+        core::postprocess::PostprocessKind::Stacktrace,
+        core::postprocess::PostprocessKind::BuildGroup,
+    ];
+    core::postprocess::apply_postprocessors(input, &processors)
 }
 
 #[derive(Debug, Subcommand)]
@@ -1756,6 +1923,7 @@ fn run_cli() -> Result<i32> {
             uninstall,
             codex,
             copilot,
+            session_compaction,
         } => {
             if show {
                 hooks::init::show_config(codex)?;
@@ -1809,6 +1977,7 @@ fn run_cli() -> Result<i32> {
                     claude_md,
                     hook_only,
                     codex,
+                    session_compaction,
                     patch_mode,
                     cli.verbose,
                 )?;
@@ -1835,6 +2004,7 @@ fn run_cli() -> Result<i32> {
 
         Commands::Gain {
             project, // added
+            by_feature,
             graph,
             history,
             quota,
@@ -1850,6 +2020,7 @@ fn run_cli() -> Result<i32> {
         } => {
             analytics::gain::run(
                 project, // added: pass project flag
+                by_feature,
                 graph,
                 history,
                 quota,
@@ -1962,6 +2133,8 @@ fn run_cli() -> Result<i32> {
 
         Commands::Curl { args } => curl_cmd::run(&args, cli.verbose)?,
 
+        Commands::Web { url } => web_cmd::run(&url, cli.verbose)?,
+
         Commands::Discover {
             project,
             limit,
@@ -1973,8 +2146,46 @@ fn run_cli() -> Result<i32> {
             0
         }
 
-        Commands::Session {} => {
-            analytics::session_cmd::run(cli.verbose)?;
+        Commands::Session { command } => {
+            match command {
+                None => session::run_overview(cli.verbose)?,
+                Some(SessionCommands::Compact {
+                    target,
+                    all,
+                    dry_run,
+                    apply,
+                    older_than,
+                    agent,
+                    explain_cache,
+                }) => session::run_compact(
+                    target.as_deref(),
+                    all,
+                    dry_run,
+                    apply,
+                    older_than.as_deref(),
+                    agent.into(),
+                    explain_cache,
+                    cli.verbose,
+                )?,
+                Some(SessionCommands::Apply { target }) => {
+                    session::run_apply(&target, cli.verbose)?
+                }
+                Some(SessionCommands::Expand {
+                    target,
+                    latest,
+                    backup,
+                }) => session::run_expand(&target, backup.as_deref(), latest, cli.verbose)?,
+                Some(SessionCommands::Status { target, agent }) => {
+                    session::run_status(&target, agent.into())?
+                }
+                Some(SessionCommands::CacheBench { provider, mode }) => session::run_cache_bench(
+                    provider_label(provider),
+                    cache_bench_mode_label(mode),
+                )?,
+                Some(SessionCommands::Hook { agent, event }) => {
+                    session::run_hook(agent.into(), event.into())?
+                }
+            }
             0
         }
 
@@ -2228,8 +2439,14 @@ fn run_cli() -> Result<i32> {
                     libc::raise(sig);
                 }
                 unsafe {
-                    libc::signal(libc::SIGINT, handle_signal as libc::sighandler_t);
-                    libc::signal(libc::SIGTERM, handle_signal as libc::sighandler_t);
+                    libc::signal(
+                        libc::SIGINT,
+                        handle_signal as *const () as libc::sighandler_t,
+                    );
+                    libc::signal(
+                        libc::SIGTERM,
+                        handle_signal as *const () as libc::sighandler_t,
+                    );
                 }
             }
 
@@ -2427,6 +2644,7 @@ fn is_operational_command(cmd: &Commands) -> bool {
             | Commands::Go { .. }
             | Commands::GolangciLint { .. }
             | Commands::Gt { .. }
+            | Commands::Web { .. }
     )
 }
 
@@ -2434,6 +2652,25 @@ fn is_operational_command(cmd: &Commands) -> bool {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn test_toml_fallback_postprocessor_feature_is_preserved() {
+        let input = "Requirement already satisfied: requests in /tmp/site-packages\nUsing cached certifi-2023.7.22-py3-none-any.whl\nSuccessfully installed flask-2.3.3";
+        let result = apply_toml_fallback_postprocessors(input);
+
+        assert_eq!(result.feature, Some("pkg-install"));
+        assert!(!result.output.to_lowercase().contains("already satisfied"));
+        assert!(result.output.contains("Successfully installed flask-2.3.3"));
+    }
+
+    #[test]
+    fn test_toml_fallback_postprocessor_feature_none_when_unchanged() {
+        let input = "plain command output\nno package, stacktrace, or build grouping";
+        let result = apply_toml_fallback_postprocessors(input);
+
+        assert_eq!(result.feature, None);
+        assert_eq!(result.output, input);
+    }
 
     #[test]
     fn test_git_commit_single_message() {
@@ -2641,7 +2878,7 @@ mod tests {
         // RTK meta-commands should produce parse errors (not fall through to raw execution).
         // Skip "proxy" because it uses trailing_var_arg (accepts any args by design).
         for cmd in RTK_META_COMMANDS {
-            if matches!(*cmd, "proxy" | "run" | "rewrite" | "session") {
+            if matches!(*cmd, "proxy" | "run" | "rewrite") {
                 continue; // these use trailing_var_arg (accept any args by design)
             }
             let result = Cli::try_parse_from(["rtk", cmd, "--nonexistent-flag-xyz"]);
@@ -2719,6 +2956,36 @@ mod tests {
     }
 
     #[test]
+    fn test_session_compact_parses() {
+        let cli = Cli::try_parse_from([
+            "rtk",
+            "session",
+            "compact",
+            "--apply",
+            "--older-than",
+            "2h",
+            "--all",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Session {
+                command:
+                    Some(SessionCommands::Compact {
+                        all,
+                        apply,
+                        older_than,
+                        ..
+                    }),
+            } => {
+                assert!(all);
+                assert!(apply);
+                assert_eq!(older_than.as_deref(), Some("2h"));
+            }
+            _ => panic!("Expected session compact command"),
+        }
+    }
+
+    #[test]
     fn test_meta_command_list_is_complete() {
         // Verify all meta-commands are in the guard list by checking they parse with valid syntax
         let meta_cmds_that_parse = [
@@ -2731,6 +2998,14 @@ mod tests {
             vec!["rtk", "run", "-c", "echo hi"],
             vec!["rtk", "hook-audit"],
             vec!["rtk", "cc-economics"],
+            vec!["rtk", "session"],
+            vec![
+                "rtk",
+                "session",
+                "compact",
+                "--dry-run",
+                "/tmp/session.jsonl",
+            ],
         ];
         for args in &meta_cmds_that_parse {
             let result = Cli::try_parse_from(args.iter());
@@ -2999,5 +3274,13 @@ mod tests {
             }
             _ => panic!("Expected Commands::Npx for unknown tool"),
         }
+    }
+
+    #[test]
+    fn test_is_operational_command_web_variant() {
+        let cmd = Commands::Web {
+            url: "https://example.com".to_string(),
+        };
+        assert!(is_operational_command(&cmd), "Commands::Web should be operational");
     }
 }

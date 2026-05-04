@@ -306,6 +306,7 @@ pub fn split_on_operators(cmd: &str, stop_at_pipe: bool) -> Vec<&str> {
     results
 }
 
+#[allow(dead_code)]
 pub fn strip_quotes(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     if chars.len() >= 2

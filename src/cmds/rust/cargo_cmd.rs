@@ -2,8 +2,9 @@
 
 use crate::core::runner;
 use crate::core::stream::{BlockHandler, BlockStreamFilter, StreamFilter};
+use crate::core::tracking;
 use crate::core::utils::{resolved_command, truncate};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -338,6 +339,61 @@ fn run_cargo_streamed(
     )
 }
 
+fn run_cargo_filtered_with_feature<F>(
+    subcommand: &str,
+    args: &[String],
+    verbose: u8,
+    filter_fn: F,
+    feature: &'static str,
+) -> Result<i32>
+where
+    F: Fn(&str) -> String,
+{
+    let timer = tracking::TimedExecution::start();
+    let mut cmd = resolved_command("cargo");
+    cmd.arg(subcommand);
+
+    let restored_args = restore_double_dash(args);
+    for arg in &restored_args {
+        cmd.arg(arg);
+    }
+
+    if verbose > 0 {
+        eprintln!("Running: cargo {} {}", subcommand, restored_args.join(" "));
+    }
+
+    let result = crate::core::stream::run_streaming(
+        &mut cmd,
+        crate::core::stream::StdinMode::Null,
+        crate::core::stream::FilterMode::CaptureOnly,
+    )
+    .with_context(|| format!("Failed to run cargo {}", subcommand))?;
+
+    let filtered = filter_fn(&result.raw);
+    let tee_label = format!("cargo_{}", subcommand);
+    runner::print_with_hint(&filtered, &result.raw, &tee_label, result.exit_code);
+
+    let cmd_label = format!("cargo {} {}", subcommand, restored_args.join(" "));
+    if result.raw != filtered {
+        timer.track_with_feature(
+            &cmd_label,
+            &format!("rtk {}", cmd_label),
+            &result.raw,
+            &filtered,
+            feature,
+        );
+    } else {
+        timer.track(
+            &cmd_label,
+            &format!("rtk {}", cmd_label),
+            &result.raw,
+            &filtered,
+        );
+    }
+
+    Ok(result.exit_code)
+}
+
 fn run_build(args: &[String], verbose: u8) -> Result<i32> {
     run_cargo_streamed(
         "build",
@@ -370,7 +426,15 @@ fn run_check(args: &[String], verbose: u8) -> Result<i32> {
 }
 
 fn run_install(args: &[String], verbose: u8) -> Result<i32> {
-    run_cargo_filtered("install", args, verbose, filter_cargo_install)
+    run_cargo_filtered_with_feature(
+        "install",
+        args,
+        verbose,
+        |raw| {
+            crate::core::postprocess::package_install::compress_pkg_log(&filter_cargo_install(raw))
+        },
+        "pkg-install",
+    )
 }
 
 fn run_nextest(args: &[String], verbose: u8) -> Result<i32> {

@@ -1,10 +1,13 @@
 //! Runs arbitrary commands and captures only stderr or test failures.
 
-use crate::core::stream::StreamFilter;
+use crate::core::postprocess::PostprocessKind;
 use anyhow::Result;
 use lazy_static::lazy_static;
 use regex::Regex;
 use std::process::Command;
+
+const NO_ERRORS_WARNINGS_MATCHED: &str = "[rtk] no errors/warnings matched";
+const FAILURE_TAIL_LINES: usize = 8;
 
 lazy_static! {
     static ref ERROR_PATTERNS: Vec<Regex> = vec![
@@ -30,74 +33,6 @@ lazy_static! {
     ];
 }
 
-struct ErrorStreamFilter {
-    in_error_block: bool,
-    blank_count: usize,
-    emitted_any: bool,
-}
-
-impl ErrorStreamFilter {
-    fn new() -> Self {
-        Self {
-            in_error_block: false,
-            blank_count: 0,
-            emitted_any: false,
-        }
-    }
-}
-
-impl StreamFilter for ErrorStreamFilter {
-    fn feed_line(&mut self, line: &str) -> Option<String> {
-        let is_error = ERROR_PATTERNS.iter().any(|p| p.is_match(line));
-        if is_error {
-            self.in_error_block = true;
-            self.blank_count = 0;
-            self.emitted_any = true;
-            Some(format!("{}\n", line))
-        } else if self.in_error_block {
-            if line.trim().is_empty() {
-                self.blank_count += 1;
-                if self.blank_count >= 2 {
-                    self.in_error_block = false;
-                    None
-                } else {
-                    self.emitted_any = true;
-                    Some(format!("{}\n", line))
-                }
-            } else if line.starts_with(' ') || line.starts_with('\t') {
-                self.blank_count = 0;
-                self.emitted_any = true;
-                Some(format!("{}\n", line))
-            } else {
-                self.in_error_block = false;
-                None
-            }
-        } else {
-            None
-        }
-    }
-
-    fn flush(&mut self) -> String {
-        String::new()
-    }
-
-    fn on_exit(&mut self, exit_code: i32, raw: &str) -> Option<String> {
-        if self.emitted_any {
-            return None;
-        }
-        if exit_code == 0 {
-            Some("[ok] Command completed successfully (no errors)".to_string())
-        } else {
-            let mut msg = format!("[FAIL] Command failed (exit code: {})\n", exit_code);
-            let lines: Vec<&str> = raw.lines().collect();
-            for line in lines.iter().rev().take(10).rev() {
-                msg.push_str(&format!("  {}\n", line));
-            }
-            Some(msg)
-        }
-    }
-}
-
 fn build_shell_command(command: &str) -> Command {
     if cfg!(target_os = "windows") {
         let mut c = Command::new("cmd");
@@ -116,12 +51,14 @@ pub fn run_err(command: &str, verbose: u8) -> Result<i32> {
         eprintln!("Running: {}", command);
     }
     let cmd = build_shell_command(command);
-    crate::core::runner::run_streamed(
+    crate::core::runner::run_filtered(
         cmd,
         "err",
         command,
-        Box::new(ErrorStreamFilter::new()),
-        crate::core::runner::RunOptions::with_tee("err"),
+        filter_errors,
+        crate::core::runner::RunOptions::with_tee("err")
+            .postprocess(&[PostprocessKind::Stacktrace, PostprocessKind::BuildGroup])
+            .failure_fallback(err_failure_fallback),
     )
 }
 
@@ -141,7 +78,6 @@ pub fn run_test(command: &str, verbose: u8) -> Result<i32> {
     )
 }
 
-#[cfg(test)]
 fn filter_errors(output: &str) -> String {
     let mut result = Vec::new();
     let mut in_error_block = false;
@@ -171,7 +107,46 @@ fn filter_errors(output: &str) -> String {
         }
     }
 
-    result.join("\n")
+    if result.is_empty() {
+        NO_ERRORS_WARNINGS_MATCHED.to_string()
+    } else {
+        result.join("\n")
+    }
+}
+
+fn err_failure_fallback(filtered: &str, raw: &str, exit_code: i32) -> Option<String> {
+    if exit_code == 0 {
+        return None;
+    }
+
+    if filtered.trim() != NO_ERRORS_WARNINGS_MATCHED {
+        return None;
+    }
+
+    let tail = raw_tail(raw, FAILURE_TAIL_LINES);
+    let mut output = format!(
+        "[rtk] command failed with exit code {exit_code}; no errors/warnings matched"
+    );
+
+    if tail.is_empty() {
+        output.push_str("\n[rtk] command produced no output");
+    } else {
+        output.push_str(&format!(
+            "\nRAW OUTPUT (last {} lines):",
+            tail.lines().count()
+        ));
+        for line in tail.lines() {
+            output.push_str(&format!("\n  {line}"));
+        }
+    }
+
+    Some(output)
+}
+
+fn raw_tail(raw: &str, max_lines: usize) -> String {
+    let lines: Vec<&str> = raw.lines().filter(|line| !line.trim().is_empty()).collect();
+    let start = lines.len().saturating_sub(max_lines);
+    lines[start..].join("\n")
 }
 
 fn extract_test_summary(output: &str, command: &str) -> String {
@@ -181,7 +156,10 @@ fn extract_test_summary(output: &str, command: &str) -> String {
     let is_cargo = command.contains("cargo test");
     let is_pytest = command.contains("pytest");
     let is_jest =
-        command.contains("jest") || command.contains("npm test") || command.contains("yarn test");
+        command.contains("jest")
+            || command.contains("npm test")
+            || command.contains("pnpm test")
+            || command.contains("yarn test");
     let is_go = command.contains("go test");
 
     let mut failures = Vec::new();
@@ -279,5 +257,41 @@ mod tests {
         let filtered = filter_errors(output);
         assert!(filtered.contains("error"));
         assert!(!filtered.contains("info"));
+    }
+
+    #[test]
+    fn filter_errors_reports_no_matches_for_clean_output() {
+        let filtered = filter_errors("building\nfinished");
+
+        assert_eq!(filtered, NO_ERRORS_WARNINGS_MATCHED);
+    }
+
+    #[test]
+    fn err_failure_fallback_adds_exit_code_and_raw_tail() {
+        let raw = "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9";
+        let fallback = err_failure_fallback(NO_ERRORS_WARNINGS_MATCHED, raw, 42).unwrap();
+
+        assert!(fallback.contains("command failed with exit code 42"));
+        assert!(fallback.contains("RAW OUTPUT (last 8 lines):"));
+        assert!(!fallback.contains("  line 1"));
+        assert!(fallback.contains("  line 2"));
+        assert!(fallback.contains("  line 9"));
+    }
+
+    #[test]
+    fn err_failure_fallback_preserves_real_diagnostics() {
+        let fallback = err_failure_fallback("error: real failure", "raw output", 1);
+
+        assert!(fallback.is_none());
+    }
+
+    #[test]
+    fn test_extract_test_summary_detects_pnpm_test() {
+        let output = "PASS src/app.test.ts\nTests:       4 passed, 4 total\nTest Suites: 1 passed, 1 total\n";
+        let summary = extract_test_summary(output, "pnpm test");
+
+        assert!(summary.contains("SUMMARY:"));
+        assert!(summary.contains("Tests:       4 passed, 4 total"));
+        assert!(summary.contains("Test Suites: 1 passed, 1 total"));
     }
 }

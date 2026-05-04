@@ -150,7 +150,7 @@ Command::new("sh").arg("-c").arg(format!("echo {}", user_input)).output();
 let path = std::env::args().nth(1).unwrap();
 
 // Hardcoded secrets
-const API_KEY: &str = "sk_live_1234567890abcdef";
+const API_KEY: &str = "redacted-example-key";
 ```
 
 **✅ DO:**

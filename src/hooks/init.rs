@@ -7,8 +7,10 @@ use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
 use super::constants::{
-    BEFORE_TOOL_KEY, CLAUDE_DIR, CLAUDE_HOOK_COMMAND, CODEX_DIR, CURSOR_HOOK_COMMAND,
-    GEMINI_HOOK_FILE, HOOKS_JSON, HOOKS_SUBDIR, PRE_TOOL_USE_KEY, REWRITE_HOOK_FILE, SETTINGS_JSON,
+    BEFORE_TOOL_KEY, CLAUDE_DIR, CLAUDE_HOOK_COMMAND, CLAUDE_SESSION_HOOK_COMMAND,
+    CLAUDE_STOP_HOOK_COMMAND, CODEX_DIR, CODEX_SESSION_HOOK_COMMAND, CURSOR_HOOK_COMMAND,
+    GEMINI_HOOK_FILE, HOOKS_JSON, HOOKS_SUBDIR, PRE_TOOL_USE_KEY, REWRITE_HOOK_FILE,
+    SESSION_END_KEY, SETTINGS_JSON, STOP_KEY,
 };
 use super::integrity;
 
@@ -185,6 +187,7 @@ rtk kubectl logs        # Deduplicated pod logs
 ```bash
 rtk curl <url>          # Compact HTTP responses (70%)
 rtk wget <url>          # Compact download output (65%)
+rtk web <url>           # Extract readable web page text
 ```
 
 ### Meta Commands
@@ -208,7 +211,7 @@ rtk init --global       # Add RTK to ~/.claude/CLAUDE.md
 | Package Managers | pnpm, npm, npx | 70-90% |
 | Files | ls, read, grep, find | 60-75% |
 | Infrastructure | docker, kubectl | 85% |
-| Network | curl, wget | 65-70% |
+| Network | curl, wget, web | 65-70% |
 
 Overall average: **60-90% token reduction** on common development operations.
 <!-- /rtk-instructions -->
@@ -226,6 +229,7 @@ pub fn run(
     claude_md: bool,
     hook_only: bool,
     codex: bool,
+    session_compaction: bool,
     patch_mode: PatchMode,
     verbose: u8,
 ) -> Result<()> {
@@ -246,8 +250,13 @@ pub fn run(
         if matches!(patch_mode, PatchMode::Skip) {
             anyhow::bail!("--codex cannot be combined with --no-patch");
         }
-        return run_codex_mode(global, verbose);
+        if session_compaction && !global {
+            anyhow::bail!("--session-compaction requires --global");
+        }
+        return run_codex_mode(global, session_compaction, verbose);
     }
+
+    let session_compaction = session_compaction;
 
     // Validation: Global-only features
     if install_opencode && !global {
@@ -275,9 +284,18 @@ pub fn run(
     // Mode selection (Claude Code / OpenCode)
     match (install_claude, install_opencode, claude_md, hook_only) {
         (false, true, _, _) => run_opencode_only_mode(verbose)?,
-        (true, opencode, true, _) => run_claude_md_mode(global, verbose, opencode)?,
-        (true, opencode, false, true) => run_hook_only_mode(global, patch_mode, verbose, opencode)?,
-        (true, opencode, false, false) => run_default_mode(global, patch_mode, verbose, opencode)?,
+        (true, opencode, true, _) => {
+            if session_compaction {
+                anyhow::bail!("--session-compaction requires global hook mode, not --claude-md");
+            }
+            run_claude_md_mode(global, verbose, opencode)?
+        }
+        (true, opencode, false, true) => {
+            run_hook_only_mode(global, patch_mode, verbose, opencode, session_compaction)?
+        }
+        (true, opencode, false, false) => {
+            run_default_mode(global, patch_mode, verbose, opencode, session_compaction)?
+        }
         (false, false, _, _) => {
             if !install_cursor {
                 anyhow::bail!("at least one of install_claude or install_opencode must be true")
@@ -459,35 +477,95 @@ fn print_manual_instructions(hook_command: &str, include_opencode: bool) {
 }
 
 fn remove_hook_from_json(root: &mut serde_json::Value) -> bool {
+    let mut removed = false;
     let hooks = match root
         .get_mut("hooks")
         .and_then(|h| h.get_mut(PRE_TOOL_USE_KEY))
     {
         Some(pre_tool_use) => pre_tool_use,
-        None => return false,
+        None => {
+            let mut removed = false;
+            if let Some(stop) = root.get_mut("hooks").and_then(|h| h.get_mut(STOP_KEY)) {
+                removed |= remove_session_hook_entries(stop);
+            }
+            if let Some(session_end) = root
+                .get_mut("hooks")
+                .and_then(|h| h.get_mut(SESSION_END_KEY))
+            {
+                removed |= remove_session_hook_entries(session_end);
+            }
+            return removed;
+        }
     };
 
-    let pre_tool_use_array = match hooks.as_array_mut() {
-        Some(arr) => arr,
-        None => return false,
-    };
-
-    let original_len = pre_tool_use_array.len();
-    pre_tool_use_array.retain(|entry| {
-        if let Some(hooks_array) = entry.get("hooks").and_then(|h| h.as_array()) {
-            for hook in hooks_array {
-                if let Some(command) = hook.get("command").and_then(|c| c.as_str()) {
-                    // Match both legacy script path and new binary command
-                    if command.contains(REWRITE_HOOK_FILE) || command == CLAUDE_HOOK_COMMAND {
-                        return false;
+    if let Some(pre_tool_use_array) = hooks.as_array_mut() {
+        let original_len = pre_tool_use_array.len();
+        pre_tool_use_array.retain(|entry| {
+            if let Some(hooks_array) = entry.get("hooks").and_then(|h| h.as_array()) {
+                for hook in hooks_array {
+                    if let Some(command) = hook.get("command").and_then(|c| c.as_str()) {
+                        // Match both legacy script path and new binary command
+                        if command.contains(REWRITE_HOOK_FILE) || command == CLAUDE_HOOK_COMMAND {
+                            return false;
+                        }
                     }
                 }
             }
+            true
+        });
+        removed |= pre_tool_use_array.len() < original_len;
+    }
+    if let Some(session_end) = root
+        .get_mut("hooks")
+        .and_then(|h| h.get_mut(SESSION_END_KEY))
+    {
+        removed |= remove_session_hook_entries(session_end);
+    }
+    if let Some(stop) = root.get_mut("hooks").and_then(|h| h.get_mut(STOP_KEY)) {
+        removed |= remove_session_hook_entries(stop);
+    }
+    removed
+}
+
+fn remove_session_hook_entries(session_end: &mut serde_json::Value) -> bool {
+    let Some(arr) = session_end.as_array_mut() else {
+        return false;
+    };
+    let original_len = arr.len();
+    let mut removed_any = false;
+
+    for entry in arr.iter_mut() {
+        if let Some(hooks) = entry.get_mut("hooks").and_then(|h| h.as_array_mut()) {
+            let hooks_original_len = hooks.len();
+            hooks.retain(|hook| {
+                !hook
+                    .get("command")
+                    .and_then(|c| c.as_str())
+                    .is_some_and(|cmd| {
+                        matches!(
+                            cmd,
+                            CLAUDE_SESSION_HOOK_COMMAND
+                                | CLAUDE_STOP_HOOK_COMMAND
+                                | CODEX_SESSION_HOOK_COMMAND
+                                | "rtk session hook"
+                        )
+                    })
+            });
+            if hooks.len() < hooks_original_len {
+                removed_any = true;
+            }
         }
-        true
+    }
+
+    // Drop entries whose hooks array is now empty
+    arr.retain(|entry| {
+        entry
+            .get("hooks")
+            .and_then(|h| h.as_array())
+            .map_or(true, |h| !h.is_empty())
     });
 
-    pre_tool_use_array.len() < original_len
+    removed_any || arr.len() < original_len
 }
 
 /// Remove RTK hook from settings.json file
@@ -699,6 +777,56 @@ fn uninstall_codex_at(codex_dir: &Path, verbose: u8) -> Result<Vec<String>> {
         removed.push("AGENTS.md: removed @RTK.md reference".to_string());
     }
 
+    // Remove Codex session-compaction hook from hooks.json
+    let hooks_path = codex_dir.join(HOOKS_JSON);
+    if hooks_path.exists() {
+        let raw = fs::read_to_string(&hooks_path)
+            .with_context(|| format!("Failed to read hooks.json: {}", hooks_path.display()))?;
+        let mut root: serde_json::Value = serde_json::from_str(&raw)
+            .with_context(|| format!("Failed to parse hooks.json: {}", hooks_path.display()))?;
+        let mut modified = false;
+        if let Some(hooks_obj) = root.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+            if let Some(stop_arr) = hooks_obj.get_mut(STOP_KEY).and_then(|s| s.as_array_mut()) {
+                let _before = stop_arr.len();
+                stop_arr.retain_mut(|entry| {
+                    if let Some(nested) = entry.get_mut("hooks").and_then(|h| h.as_array_mut()) {
+                        let nested_before = nested.len();
+                        nested.retain(|hook| {
+                            !hook
+                                .get("command")
+                                .and_then(|c| c.as_str())
+                                .is_some_and(|cmd| cmd == CODEX_SESSION_HOOK_COMMAND)
+                        });
+                        if nested.len() < nested_before {
+                            modified = true;
+                        }
+                        !nested.is_empty()
+                    } else {
+                        true
+                    }
+                });
+                if stop_arr.is_empty() {
+                    hooks_obj.remove(STOP_KEY);
+                    modified = true;
+                }
+                if hooks_obj.is_empty() {
+                    root.as_object_mut().map(|o| o.remove("hooks"));
+                    modified = true;
+                }
+            }
+        }
+        if modified {
+            let serialized = serde_json::to_string_pretty(&root)
+                .context("Failed to serialize hooks.json after uninstall")?;
+            fs::write(&hooks_path, serialized)
+                .with_context(|| format!("Failed to write hooks.json: {}", hooks_path.display()))?;
+            if verbose > 0 {
+                eprintln!("Removed Codex session-compaction hook from hooks.json");
+            }
+            removed.push("hooks.json: removed Codex session-compaction hook".to_string());
+        }
+    }
+
     Ok(removed)
 }
 
@@ -849,6 +977,158 @@ fn insert_hook_entry(root: &mut serde_json::Value, hook_command: &str) -> Result
     Ok(())
 }
 
+fn patch_session_compaction_hook(mode: PatchMode, verbose: u8) -> Result<PatchResult> {
+    let claude_dir = resolve_claude_dir()?;
+    let settings_path = claude_dir.join(SETTINGS_JSON);
+    let mut root = if settings_path.exists() {
+        let content = fs::read_to_string(&settings_path)
+            .with_context(|| format!("Failed to read {}", settings_path.display()))?;
+        if content.trim().is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(&content)
+                .with_context(|| format!("Failed to parse {} as JSON", settings_path.display()))?
+        }
+    } else {
+        serde_json::json!({})
+    };
+
+    if session_hook_already_present(&root) {
+        if verbose > 0 {
+            eprintln!("settings.json: session compaction hook already present");
+        }
+        return Ok(PatchResult::AlreadyPresent);
+    }
+
+    match mode {
+        PatchMode::Skip => {
+            print_session_manual_instructions();
+            return Ok(PatchResult::Skipped);
+        }
+        PatchMode::Ask => {
+            if !prompt_user_consent(&settings_path)? {
+                print_session_manual_instructions();
+                return Ok(PatchResult::Declined);
+            }
+        }
+        PatchMode::Auto => {}
+    }
+
+    insert_session_hook_entry(&mut root)?;
+    if settings_path.exists() {
+        let backup_path = settings_path.with_extension("json.bak");
+        fs::copy(&settings_path, &backup_path)
+            .with_context(|| format!("Failed to backup to {}", backup_path.display()))?;
+    }
+    let serialized =
+        serde_json::to_string_pretty(&root).context("Failed to serialize settings.json")?;
+    atomic_write(&settings_path, &serialized)?;
+    println!("  settings.json: session compaction hook added");
+    println!("  Stop: {}", CLAUDE_STOP_HOOK_COMMAND);
+    println!("  SessionEnd: {}", CLAUDE_SESSION_HOOK_COMMAND);
+    Ok(PatchResult::Patched)
+}
+
+fn print_session_manual_instructions() {
+    println!("\n  MANUAL STEP: Add these hooks to ~/.claude/settings.json:");
+    println!("  {{");
+    println!("    \"hooks\": {{");
+    println!("      \"Stop\": [{{");
+    println!(
+        "        \"hooks\": [{{ \"type\": \"command\", \"command\": \"{}\", \"timeout\": 10 }}]",
+        CLAUDE_STOP_HOOK_COMMAND
+    );
+    println!("      }}],");
+    println!("      \"SessionEnd\": [{{");
+    println!("        \"matcher\": \"clear|resume|logout|prompt_input_exit|bypass_permissions_disabled|other\",");
+    println!(
+        "        \"hooks\": [{{ \"type\": \"command\", \"command\": \"{}\", \"timeout\": 10 }}]",
+        CLAUDE_SESSION_HOOK_COMMAND
+    );
+    println!("      }}]");
+    println!("    }}");
+    println!("  }}");
+}
+
+fn insert_session_hook_entry(root: &mut serde_json::Value) -> Result<()> {
+    let root_obj = match root.as_object_mut() {
+        Some(obj) => obj,
+        None => {
+            *root = serde_json::json!({});
+            root.as_object_mut().expect("just-created json object")
+        }
+    };
+    let hooks = root_obj
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .context("hooks value is not an object")?;
+    let stop = hooks
+        .entry(STOP_KEY)
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()
+        .context("Stop value is not an array")?;
+    if !stop
+        .iter()
+        .any(|entry| entry_contains_command(entry, CLAUDE_STOP_HOOK_COMMAND))
+    {
+        stop.push(serde_json::json!({
+            "hooks": [{
+                "type": "command",
+                "command": CLAUDE_STOP_HOOK_COMMAND,
+                "timeout": 10
+            }]
+        }));
+    }
+    let session_end = hooks
+        .entry(SESSION_END_KEY)
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()
+        .context("SessionEnd value is not an array")?;
+    if !session_end
+        .iter()
+        .any(|entry| entry_contains_command(entry, CLAUDE_SESSION_HOOK_COMMAND))
+    {
+        session_end.push(serde_json::json!({
+            "matcher": "clear|resume|logout|prompt_input_exit|bypass_permissions_disabled|other",
+            "hooks": [{
+                "type": "command",
+                "command": CLAUDE_SESSION_HOOK_COMMAND,
+                "timeout": 10
+            }]
+        }));
+    }
+    Ok(())
+}
+
+fn session_hook_already_present(root: &serde_json::Value) -> bool {
+    hook_command_present(root, STOP_KEY, CLAUDE_STOP_HOOK_COMMAND)
+        && (hook_command_present(root, SESSION_END_KEY, CLAUDE_SESSION_HOOK_COMMAND)
+            || hook_command_present(root, SESSION_END_KEY, "rtk session hook"))
+}
+
+fn hook_command_present(root: &serde_json::Value, event: &str, command: &str) -> bool {
+    root.get("hooks")
+        .and_then(|h| h.get(event))
+        .and_then(|p| p.as_array())
+        .map(|entries| {
+            entries
+                .iter()
+                .any(|entry| entry_contains_command(entry, command))
+        })
+        .unwrap_or(false)
+}
+
+fn entry_contains_command(entry: &serde_json::Value, command: &str) -> bool {
+    entry
+        .get("hooks")
+        .and_then(|h| h.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|hook| hook.get("command")?.as_str())
+        .any(|cmd| cmd == command)
+}
+
 /// Check if RTK hook is already present in settings.json
 /// Matches on legacy rtk-rewrite.sh path OR new `rtk hook claude` command
 fn hook_already_present(root: &serde_json::Value, hook_command: &str) -> bool {
@@ -877,8 +1157,14 @@ fn run_default_mode(
     patch_mode: PatchMode,
     verbose: u8,
     install_opencode: bool,
+    session_compaction: bool,
 ) -> Result<()> {
     if !global {
+        if session_compaction {
+            anyhow::bail!(
+                "--session-compaction is global-only. Use: rtk init -g --session-compaction"
+            );
+        }
         // Local init: inject CLAUDE.md + generate project-local filters template
         run_claude_md_mode(false, verbose, install_opencode)?;
         generate_project_filters_template(verbose)?;
@@ -923,6 +1209,9 @@ fn run_default_mode(
     // 5. Patch settings.json with binary command
     let patch_result =
         patch_settings_json_command(CLAUDE_HOOK_COMMAND, patch_mode, verbose, install_opencode)?;
+    if session_compaction {
+        patch_session_compaction_hook(patch_mode, verbose)?;
+    }
 
     // Report result
     match patch_result {
@@ -1118,6 +1407,7 @@ fn run_hook_only_mode(
     patch_mode: PatchMode,
     verbose: u8,
     install_opencode: bool,
+    session_compaction: bool,
 ) -> Result<()> {
     if !global {
         eprintln!("[warn] Warning: --hook-only only makes sense with --global");
@@ -1148,6 +1438,9 @@ fn run_hook_only_mode(
     // Patch settings.json with binary command
     let patch_result =
         patch_settings_json_command(CLAUDE_HOOK_COMMAND, patch_mode, verbose, install_opencode)?;
+    if session_compaction {
+        patch_session_compaction_hook(patch_mode, verbose)?;
+    }
 
     // Report result
     match patch_result {
@@ -1405,7 +1698,7 @@ fn run_antigravity_mode_at(base_dir: &Path, verbose: u8) -> Result<()> {
     Ok(())
 }
 
-fn run_codex_mode(global: bool, verbose: u8) -> Result<()> {
+fn run_codex_mode(global: bool, session_compaction: bool, verbose: u8) -> Result<()> {
     let (agents_md_path, rtk_md_path) = if global {
         let codex_dir = resolve_codex_dir()?;
         (codex_dir.join(AGENTS_MD), codex_dir.join(RTK_MD))
@@ -1413,13 +1706,20 @@ fn run_codex_mode(global: bool, verbose: u8) -> Result<()> {
         (PathBuf::from(AGENTS_MD), PathBuf::from(RTK_MD))
     };
 
-    run_codex_mode_with_paths(agents_md_path, rtk_md_path, global, verbose)
+    run_codex_mode_with_paths(
+        agents_md_path,
+        rtk_md_path,
+        global,
+        session_compaction,
+        verbose,
+    )
 }
 
 fn run_codex_mode_with_paths(
     agents_md_path: PathBuf,
     rtk_md_path: PathBuf,
     global: bool,
+    session_compaction: bool,
     verbose: u8,
 ) -> Result<()> {
     if global {
@@ -1467,8 +1767,75 @@ fn run_codex_mode_with_paths(
             agents_md_path.display()
         );
     }
+    if session_compaction && global {
+        patch_codex_session_compaction_hook(verbose)?;
+    }
 
     Ok(())
+}
+
+fn patch_codex_session_compaction_hook(verbose: u8) -> Result<PatchResult> {
+    let codex_dir = resolve_codex_dir()?;
+    fs::create_dir_all(&codex_dir)
+        .with_context(|| format!("Failed to create Codex config dir: {}", codex_dir.display()))?;
+    let hooks_path = codex_dir.join(HOOKS_JSON);
+    let mut root = if hooks_path.exists() {
+        let content = fs::read_to_string(&hooks_path)
+            .with_context(|| format!("Failed to read {}", hooks_path.display()))?;
+        if content.trim().is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(&content)
+                .with_context(|| format!("Failed to parse {} as JSON", hooks_path.display()))?
+        }
+    } else {
+        serde_json::json!({})
+    };
+
+    if hook_command_present(&root, STOP_KEY, CODEX_SESSION_HOOK_COMMAND) {
+        if verbose > 0 {
+            eprintln!("hooks.json: Codex session compaction hook already present");
+        }
+        println!("  Codex hooks.json: session compaction hook already present");
+        return Ok(PatchResult::AlreadyPresent);
+    }
+
+    let root_obj = match root.as_object_mut() {
+        Some(obj) => obj,
+        None => {
+            root = serde_json::json!({});
+            root.as_object_mut().expect("just-created json object")
+        }
+    };
+    let hooks = root_obj
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .context("hooks value is not an object")?;
+    let stop = hooks
+        .entry(STOP_KEY)
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()
+        .context("Stop value is not an array")?;
+    stop.push(serde_json::json!({
+        "hooks": [{
+            "type": "command",
+            "command": CODEX_SESSION_HOOK_COMMAND,
+            "timeout": 10
+        }]
+    }));
+
+    if hooks_path.exists() {
+        let backup_path = hooks_path.with_extension("json.bak");
+        fs::copy(&hooks_path, &backup_path)
+            .with_context(|| format!("Failed to backup to {}", backup_path.display()))?;
+    }
+    let serialized =
+        serde_json::to_string_pretty(&root).context("Failed to serialize hooks.json")?;
+    atomic_write(&hooks_path, &serialized)?;
+    println!("  Codex hooks.json: session compaction hook added");
+    println!("  Stop: {}", CODEX_SESSION_HOOK_COMMAND);
+    Ok(PatchResult::Patched)
 }
 
 // --- upsert_rtk_block: idempotent RTK block management ---
@@ -2687,6 +3054,7 @@ mod tests {
             "rtk pnpm",
             "rtk npm",
             "rtk curl",
+            "rtk web",
             "rtk git",
             "rtk docker",
             "rtk kubectl",
@@ -2875,6 +3243,7 @@ More notes
             false,
             false,
             true,
+            false,
             PatchMode::Auto,
             0,
         )
@@ -2897,6 +3266,7 @@ More notes
             false,
             false,
             true,
+            false,
             PatchMode::Skip,
             0,
         )
@@ -2993,7 +3363,7 @@ More notes
         let agents_md = temp.path().join("AGENTS.md");
         let rtk_md = temp.path().join("RTK.md");
 
-        run_codex_mode_with_paths(agents_md.clone(), rtk_md.clone(), true, 0).unwrap();
+        run_codex_mode_with_paths(agents_md.clone(), rtk_md.clone(), true, false, 0).unwrap();
 
         assert!(rtk_md.exists());
         assert_eq!(fs::read_to_string(&rtk_md).unwrap(), RTK_SLIM_CODEX);
@@ -3668,7 +4038,7 @@ More notes
     fn test_global_default_mode_creates_artifacts() {
         let tmp = TempDir::new().unwrap();
         with_claude_dir_override(&tmp, |claude_dir| {
-            run_default_mode(true, PatchMode::Auto, 0, false).unwrap();
+            run_default_mode(true, PatchMode::Auto, 0, false, false).unwrap();
 
             assert!(claude_dir.join(RTK_MD).exists(), "RTK.md must be created");
             assert!(
@@ -3690,7 +4060,7 @@ More notes
     fn test_global_uninstall_removes_artifacts() {
         let tmp = TempDir::new().unwrap();
         with_claude_dir_override(&tmp, |claude_dir| {
-            run_default_mode(true, PatchMode::Auto, 0, false).unwrap();
+            run_default_mode(true, PatchMode::Auto, 0, false, false).unwrap();
             uninstall(true, false, false, false, 0).unwrap();
 
             assert!(!claude_dir.join(RTK_MD).exists(), "RTK.md must be removed");
@@ -3707,12 +4077,43 @@ More notes
     fn test_global_default_mode_idempotent() {
         let tmp = TempDir::new().unwrap();
         with_claude_dir_override(&tmp, |claude_dir| {
-            run_default_mode(true, PatchMode::Auto, 0, false).unwrap();
-            run_default_mode(true, PatchMode::Auto, 0, false).unwrap();
+            run_default_mode(true, PatchMode::Auto, 0, false, false).unwrap();
+            run_default_mode(true, PatchMode::Auto, 0, false, false).unwrap();
 
             let settings = fs::read_to_string(claude_dir.join(SETTINGS_JSON)).unwrap();
             let count = settings.matches(CLAUDE_HOOK_COMMAND).count();
             assert_eq!(count, 1, "hook command must appear exactly once");
+        });
+    }
+
+    #[test]
+    fn test_session_compaction_hook_added_and_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        with_claude_dir_override(&tmp, |claude_dir| {
+            run_default_mode(true, PatchMode::Auto, 0, false, true).unwrap();
+            run_default_mode(true, PatchMode::Auto, 0, false, true).unwrap();
+
+            let settings = fs::read_to_string(claude_dir.join(SETTINGS_JSON)).unwrap();
+            assert_eq!(settings.matches(CLAUDE_HOOK_COMMAND).count(), 1);
+            assert_eq!(settings.matches(CLAUDE_SESSION_HOOK_COMMAND).count(), 1);
+            assert_eq!(settings.matches(CLAUDE_STOP_HOOK_COMMAND).count(), 1);
+            assert!(settings.contains(SESSION_END_KEY));
+            assert!(settings.contains(STOP_KEY));
+        });
+    }
+
+    #[test]
+    fn test_uninstall_removes_session_compaction_hook() {
+        let tmp = TempDir::new().unwrap();
+        with_claude_dir_override(&tmp, |claude_dir| {
+            run_default_mode(true, PatchMode::Auto, 0, false, true).unwrap();
+            uninstall(true, false, false, false, 0).unwrap();
+
+            let settings_content =
+                fs::read_to_string(claude_dir.join(SETTINGS_JSON)).unwrap_or_default();
+            assert!(!settings_content.contains(CLAUDE_HOOK_COMMAND));
+            assert!(!settings_content.contains(CLAUDE_SESSION_HOOK_COMMAND));
+            assert!(!settings_content.contains(CLAUDE_STOP_HOOK_COMMAND));
         });
     }
 
@@ -3727,7 +4128,7 @@ More notes
                 "pre-condition: old block must exist"
             );
 
-            run_default_mode(true, PatchMode::Auto, 0, false).unwrap();
+            run_default_mode(true, PatchMode::Auto, 0, false, false).unwrap();
 
             assert!(claude_dir.join(RTK_MD).exists(), "RTK.md must be created");
             let settings = fs::read_to_string(claude_dir.join(SETTINGS_JSON)).unwrap();
@@ -3744,7 +4145,7 @@ More notes
         let cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
 
-        let result = run_default_mode(false, PatchMode::Auto, 0, false);
+        let result = run_default_mode(false, PatchMode::Auto, 0, false, false);
         std::env::set_current_dir(&cwd).unwrap();
 
         result.unwrap();
@@ -3762,7 +4163,7 @@ More notes
     fn test_global_hook_only_mode_creates_settings() {
         let tmp = TempDir::new().unwrap();
         with_claude_dir_override(&tmp, |claude_dir| {
-            run_hook_only_mode(true, PatchMode::Auto, 0, false).unwrap();
+            run_hook_only_mode(true, PatchMode::Auto, 0, false, false).unwrap();
 
             assert!(
                 !claude_dir.join(RTK_MD).exists(),

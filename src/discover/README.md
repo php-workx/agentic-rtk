@@ -26,15 +26,18 @@ When a hook sends `cargo fmt --all && cargo test 2>&1 | tail -20`:
 **Per-segment rewriting** — Each segment goes through:
 
 1. Strip trailing redirects (`2>&1`, `>/dev/null`) — matched via lexer tokens, set aside, re-appended after rewriting
-2. Short-circuit special cases — `head -20 file` → `rtk read file --max-lines 20`, `tail -n 5 file` → `rtk read file --tail-lines 5`. These can't go through generic prefix replacement because it would produce `rtk read -20 file` (wrong flag position)
+2. Short-circuit special cases — `head -20 file` → `rtk read file --max-lines 20`, `tail -n 5 file` → `rtk read file --tail-lines 5`, source-code `cat file.rs` → `rtk read -l whitespace file.rs`, and selected safe package/Python commands such as `uv run pytest` → `rtk pytest`
 3. Classify the command — strip env prefixes (`sudo`, `FOO="bar baz"`), normalize paths (`/usr/bin/grep` → `grep`), strip git global opts (`git -C /tmp` → `git`), then match against 60+ regex patterns from `rules.rs`
 4. Apply the rewrite — find the matching rule, replace the command prefix with `rtk <cmd>`, re-prepend the env prefix, re-append the redirect suffix
 
 **Guards along the way:**
 - `RTK_DISABLED=1` in the env prefix → skip rewrite
 - `gh` with `--json`/`--jq`/`--template` → skip (structured output, rtk would corrupt it)
+- Direct `cat` only gets source-code whitespace compaction for safe source extensions; data/config/markup files are left raw
+- `cat` before a pipe uses plain `rtk read` so pipe consumers see unfiltered content
 - `cat` with flags other than `-n` → skip (different semantics than `rtk read`)
 - `cat`/`head`/`tail` with `>` or `>>` → skip (write operation, not a read)
+- Package-manager scripts named `dev`, `start`, `serve`, `watch`, `preview`, or `storybook`, and test watch-mode invocations, are skipped
 - Command in `hooks.exclude_commands` config → skip
 
 **Result**: `rtk cargo fmt --all && rtk cargo test 2>&1 | tail -20`. Bash handles the `&&` and `|` at execution time — each `rtk` invocation is a separate process.

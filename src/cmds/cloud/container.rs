@@ -484,10 +484,13 @@ pub fn format_compose_build(raw: &str) -> String {
         result.push_str(&format!("  Services: {}\n", services.join(", ")));
     }
 
-    // Count build steps (lines starting with " => ")
+    // Count BuildKit and legacy docker build steps.
     let step_count = raw
         .lines()
-        .filter(|l| l.trim_start().starts_with("=> "))
+        .filter(|l| {
+            let trimmed = l.trim_start();
+            trimmed.starts_with("=> ") || trimmed.starts_with("Step ")
+        })
         .count();
     if step_count > 0 {
         result.push_str(&format!("  Steps: {}", step_count));
@@ -731,6 +734,22 @@ api-1  | Connected to database";
             !out.is_empty(),
             "should produce output even for empty input"
         );
+    }
+
+    #[test]
+    fn test_format_compose_build_legacy_docker_steps() {
+        let raw = "\
+Step 1/4 : FROM node:20
+ ---> abc123
+Step 2/4 : WORKDIR /app
+ ---> def456
+Step 3/4 : COPY . .
+ ---> 789abc
+Step 4/4 : RUN npm install
+Successfully built cafe123";
+        let out = format_compose_build(raw);
+        assert!(out.contains("Steps: 4"), "should count legacy docker steps");
+        assert!(out.len() < raw.len(), "should be shorter than raw");
     }
 
     // ── compact_ports (existing, previously untested) ──────

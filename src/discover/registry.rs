@@ -3,7 +3,7 @@
 use lazy_static::lazy_static;
 use regex::{Regex, RegexSet};
 
-use super::lexer::{split_on_operators, tokenize, TokenKind};
+use super::lexer::{shell_split, split_on_operators, tokenize, TokenKind};
 use super::rules::{IGNORED_EXACT, IGNORED_PREFIXES, RULES};
 
 /// Result of classifying a command.
@@ -508,6 +508,8 @@ fn rewrite_compound(cmd: &str, excluded: &[ExcludePattern]) -> Option<String> {
                     || seg == "fd";
                 let rewritten = if is_pipe_incompatible {
                     seg.to_string()
+                } else if is_cat_segment(seg) {
+                    rewrite_cat_plain_read(seg, excluded).unwrap_or_else(|| seg.to_string())
                 } else {
                     rewrite_segment(seg, excluded).unwrap_or_else(|| seg.to_string())
                 };
@@ -592,6 +594,220 @@ fn rewrite_line_range(cmd: &str) -> Option<String> {
     None
 }
 
+fn rewrite_conservative_command(
+    cmd_clean: &str,
+    env_prefix: &str,
+    redirect_suffix: &str,
+) -> Option<String> {
+    if !redirect_suffix.is_empty() {
+        return None;
+    }
+
+    for (prefix, rtk_cmd) in [
+        ("uv run pytest", "rtk pytest"),
+        ("uv run python -m pytest", "rtk pytest"),
+        ("uv run ruff check", "rtk ruff check"),
+        ("uv run python -m ruff check", "rtk ruff check"),
+        ("uv run mypy", "rtk mypy"),
+        ("uv run python -m mypy", "rtk mypy"),
+    ] {
+        if let Some(rest) = strip_word_prefix(cmd_clean, prefix) {
+            return Some(format_rewrite(env_prefix, rtk_cmd, rest, redirect_suffix));
+        }
+    }
+
+    if let Some(rewritten) = rewrite_package_manager_script(cmd_clean, env_prefix) {
+        return Some(rewritten);
+    }
+
+    if let Some(rest) = strip_word_prefix(cmd_clean, "just") {
+        return Some(format_rewrite(
+            env_prefix,
+            "rtk just",
+            rest,
+            redirect_suffix,
+        ));
+    }
+
+    None
+}
+
+fn rewrite_package_manager_script(cmd_clean: &str, env_prefix: &str) -> Option<String> {
+    let words = shell_split(cmd_clean);
+    let script = package_manager_script_name(&words)?;
+
+    if is_interactive_package_script(script) || has_watch_arg(&words) {
+        return None;
+    }
+
+    let wrapper = match script {
+        "test" => "rtk test",
+        "build" | "check" | "typecheck" => "rtk err",
+        _ => return None,
+    };
+
+    Some(format!("{}{} {}", env_prefix, wrapper, cmd_clean))
+}
+
+fn should_skip_package_manager_script(cmd_clean: &str) -> bool {
+    let words = shell_split(cmd_clean);
+    let Some(script) = package_manager_script_name(&words) else {
+        return false;
+    };
+
+    is_interactive_package_script(script) || has_watch_arg(&words)
+}
+
+fn package_manager_script_name(words: &[String]) -> Option<&str> {
+    let manager = words.first()?.as_str();
+    if !matches!(manager, "npm" | "pnpm" | "yarn") {
+        return None;
+    }
+
+    match words.get(1)?.as_str() {
+        "run" | "run-script" => words.get(2).map(String::as_str),
+        script => Some(script),
+    }
+}
+
+fn is_interactive_package_script(script: &str) -> bool {
+    matches!(
+        script,
+        "dev" | "start" | "serve" | "watch" | "preview" | "storybook"
+    )
+}
+
+fn has_watch_arg(words: &[String]) -> bool {
+    words.iter().skip(2).any(|arg| {
+        matches!(
+            arg.as_str(),
+            "watch" | "--watch" | "--watchAll" | "--watch-all" | "--watchAll=true"
+        ) || arg.starts_with("--watch=")
+    })
+}
+
+fn rewrite_cat_read(cmd_clean: &str, env_prefix: &str, redirect_suffix: &str) -> Option<String> {
+    if !redirect_suffix.is_empty() {
+        return None;
+    }
+
+    let result = parse_cat_command(cmd_clean)?;
+    if !shell_split(result.files_segment)
+        .iter()
+        .all(|file| is_whitespace_safe_source_file(file))
+    {
+        return None;
+    }
+
+    let command = if result.line_numbers {
+        "rtk read -n -l whitespace"
+    } else {
+        "rtk read -l whitespace"
+    };
+    Some(format_rewrite(
+        env_prefix,
+        command,
+        result.files_segment,
+        redirect_suffix,
+    ))
+}
+
+fn is_whitespace_safe_source_file(file: &str) -> bool {
+    let path = std::path::Path::new(file);
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()),
+        Some("rs" | "js" | "ts" | "tsx" | "go" | "java" | "c" | "cpp" | "rb" | "py" | "kt" | "swift" | "sh" | "json" | "yaml" | "yml")
+    )
+}
+
+fn starts_with_command_word(cmd: &str, word: &str) -> bool {
+    cmd == word || cmd.starts_with(&format!("{word} "))
+}
+
+fn is_cat_segment(seg: &str) -> bool {
+    let stripped = ENV_PREFIX.replace(seg.trim(), "");
+    starts_with_command_word(stripped.trim(), "cat")
+}
+
+#[derive(Debug)]
+struct CatParseResult<'a> {
+    files_segment: &'a str,
+    line_numbers: bool,
+}
+
+fn parse_cat_command(cmd_clean: &str) -> Option<CatParseResult> {
+    let parsed = tokenize(cmd_clean);
+    let words = shell_split(cmd_clean);
+    if words.first().map(String::as_str) != Some("cat") {
+        return None;
+    }
+
+    let mut file_index = 1;
+    let mut line_numbers = false;
+    if words.get(1).map(String::as_str) == Some("-n") {
+        line_numbers = true;
+        file_index = 2;
+    } else if words.get(1).is_some_and(|arg| arg.starts_with('-')) {
+        return None;
+    }
+
+    let files = words.get(file_index..)?;
+    if files.is_empty() || files.iter().any(|file| file == "-") {
+        return None;
+    }
+
+    if parsed
+        .iter()
+        .skip(file_index)
+        .any(|token| token.kind != TokenKind::Arg)
+    {
+        return None;
+    }
+
+    let files_segment = parsed
+        .get(file_index)
+        .map(|token| cmd_clean[token.offset..].trim())?;
+    Some(CatParseResult {
+        files_segment,
+        line_numbers,
+    })
+}
+
+fn rewrite_cat_plain_read(seg: &str, excluded: &[ExcludePattern]) -> Option<String> {
+    let (cmd_part, redirect_suffix) = strip_trailing_redirects(seg.trim());
+    if !redirect_suffix.is_empty() {
+        return None;
+    }
+
+    if has_rtk_disabled_prefix(cmd_part) {
+        return None;
+    }
+
+    let stripped_cow = ENV_PREFIX.replace(cmd_part, "");
+    let env_prefix_len = cmd_part.len() - stripped_cow.len();
+    let env_prefix = &cmd_part[..env_prefix_len];
+    let cmd_clean = stripped_cow.trim();
+    if is_excluded(cmd_clean, excluded) {
+        return None;
+    }
+
+    let result = parse_cat_command(cmd_clean)?;
+    let command = if result.line_numbers {
+        "rtk read -n"
+    } else {
+        "rtk read"
+    };
+    Some(format_rewrite(env_prefix, command, result.files_segment, ""))
+}
+
+fn format_rewrite(env_prefix: &str, rtk_cmd: &str, rest: &str, redirect_suffix: &str) -> String {
+    if rest.is_empty() {
+        format!("{}{}{}", env_prefix, rtk_cmd, redirect_suffix)
+    } else {
+        format!("{}{} {}{}", env_prefix, rtk_cmd, rest, redirect_suffix)
+    }
+}
+
 /// Shell prefix builtins that modify how the shell runs a command
 /// but don't change which command runs. Strip before routing, re-prepend after.
 const SHELL_PREFIX_BUILTINS: &[&str] = &["noglob", "command", "builtin", "exec", "nocorrect"];
@@ -660,10 +876,8 @@ fn rewrite_segment_inner(seg: &str, excluded: &[ExcludePattern], depth: usize) -
             if rest.is_empty() {
                 return None;
             }
-            return match rewrite_segment_inner(rest, excluded, depth + 1) {
-                Some(rewritten) => Some(format!("{} {}", prefix, rewritten)),
-                None => None,
-            };
+            return rewrite_segment_inner(rest, excluded, depth + 1)
+                .map(|rewritten| format!("{} {}", prefix, rewritten));
         }
     }
 
@@ -676,37 +890,6 @@ fn rewrite_segment_inner(seg: &str, excluded: &[ExcludePattern], depth: usize) -
         return Some(trimmed.to_string());
     }
 
-    if cmd_part.starts_with("head -") || cmd_part.starts_with("tail ") {
-        return rewrite_line_range(cmd_part).map(|r| format!("{}{}", r, redirect_suffix));
-    }
-
-    // Most cat flags (-v, -A, -e, -t, -s, -b, --show-all, etc.) have different
-    // semantics than rtk read or no equivalent at all. Only `-n` (line numbers)
-    // maps correctly to `rtk read -n`. Skip rewrite for any other flag.
-    if let Some(cmd_args) = cmd_part.strip_prefix("cat ") {
-        let args = cmd_args.trim_start();
-        if args.starts_with('-') && !args.starts_with("-n ") && !args.starts_with("-n\t") {
-            return None;
-        }
-    }
-
-    // Use classify_command for correct ignore/prefix handling
-    let rtk_equivalent = match classify_command(cmd_part) {
-        Classification::Supported { rtk_equivalent, .. } => {
-            let stripped = ENV_PREFIX.replace(cmd_part, "");
-            let cmd_clean = stripped.trim();
-            if is_excluded(cmd_clean, excluded) {
-                return None;
-            }
-            rtk_equivalent
-        }
-        _ => return None,
-    };
-
-    // Find the matching rule (rtk_cmd values are unique across all rules)
-    let rule = RULES.iter().find(|r| r.rtk_cmd == rtk_equivalent)?;
-
-    // Extract env prefix (sudo, env VAR=val, etc.)
     let stripped_cow = ENV_PREFIX.replace(cmd_part, "");
     let env_prefix_len = cmd_part.len() - stripped_cow.len();
     let env_prefix = &cmd_part[..env_prefix_len];
@@ -721,6 +904,35 @@ fn rewrite_segment_inner(seg: &str, excluded: &[ExcludePattern], depth: usize) -
         );
         return None;
     }
+
+    if is_excluded(cmd_clean, excluded) {
+        return None;
+    }
+
+    if cmd_clean.starts_with("head -") || cmd_clean.starts_with("tail ") {
+        return rewrite_line_range(cmd_clean).map(|r| format!("{}{}{}", env_prefix, r, redirect_suffix));
+    }
+
+    if starts_with_command_word(cmd_clean, "cat") {
+        return rewrite_cat_read(cmd_clean, env_prefix, redirect_suffix);
+    }
+
+    if should_skip_package_manager_script(cmd_clean) {
+        return None;
+    }
+
+    if let Some(rewritten) = rewrite_conservative_command(cmd_clean, env_prefix, redirect_suffix) {
+        return Some(rewritten);
+    }
+
+    // Use classify_command for correct ignore/prefix handling
+    let rtk_equivalent = match classify_command(cmd_part) {
+        Classification::Supported { rtk_equivalent, .. } => rtk_equivalent,
+        _ => return None,
+    };
+
+    // Find the matching rule (rtk_cmd values are unique across all rules)
+    let rule = RULES.iter().find(|r| r.rtk_cmd == rtk_equivalent)?;
 
     if let Some(parts) = parse_golangci_run_parts(cmd_clean) {
         let rewritten = if parts.global_segment.is_empty() {
@@ -897,6 +1109,28 @@ mod tests {
             }
             // Unsupported or Ignored is fine
         }
+    }
+
+    #[test]
+    fn test_rewrite_cat_source_uses_whitespace_filter() {
+        assert_eq!(
+            rewrite_command("cat src/main.rs", &[]),
+            Some("rtk read -l whitespace src/main.rs".into())
+        );
+        assert_eq!(
+            rewrite_command("cat -n src/main.rs", &[]),
+            Some("rtk read -n -l whitespace src/main.rs".into())
+        );
+    }
+
+    #[test]
+    fn test_does_not_rewrite_data_file_cat() {
+        assert_eq!(rewrite_command("cat README.md", &[]), None);
+    }
+
+    #[test]
+    fn test_does_not_rewrite_redirected_cat() {
+        assert_eq!(rewrite_command("cat src/main.rs > out", &[]), None);
     }
 
     #[test]
@@ -1291,7 +1525,7 @@ mod tests {
     fn test_rewrite_cat_file() {
         assert_eq!(
             rewrite_command("cat src/main.rs", &[]),
-            Some("rtk read src/main.rs".into())
+            Some("rtk read -l whitespace src/main.rs".into())
         );
     }
 
@@ -1308,10 +1542,18 @@ mod tests {
 
     #[test]
     fn test_rewrite_cat_with_compatible_flags() {
-        // cat -n (line numbers) maps to rtk read -n — allow rewrite
+        // cat -n (line numbers) maps to rtk read -n for safe source files.
         assert_eq!(
-            rewrite_command("cat -n file.txt", &[]),
-            Some("rtk read -n file.txt".into())
+            rewrite_command("cat -n src/main.rs", &[]),
+            Some("rtk read -n -l whitespace src/main.rs".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_cat_before_pipe_preserves_plain_read() {
+        assert_eq!(
+            rewrite_command("cat src/main.rs | head", &[]),
+            Some("rtk read src/main.rs | head".into())
         );
     }
 
@@ -2148,6 +2390,82 @@ mod tests {
     }
 
     #[test]
+    fn test_rewrite_uv_run_pytest() {
+        assert_eq!(
+            rewrite_command("uv run pytest -q", &[]),
+            Some("rtk pytest -q".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_uv_run_python_m_pytest() {
+        assert_eq!(
+            rewrite_command("uv run python -m pytest tests -x", &[]),
+            Some("rtk pytest tests -x".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_uv_run_ruff_check() {
+        assert_eq!(
+            rewrite_command("uv run ruff check .", &[]),
+            Some("rtk ruff check .".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_uv_run_mypy() {
+        assert_eq!(
+            rewrite_command("uv run mypy src", &[]),
+            Some("rtk mypy src".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_package_manager_safe_scripts() {
+        assert_eq!(
+            rewrite_command("pnpm test", &[]),
+            Some("rtk test pnpm test".into())
+        );
+        assert_eq!(
+            rewrite_command("pnpm typecheck", &[]),
+            Some("rtk err pnpm typecheck".into())
+        );
+        assert_eq!(
+            rewrite_command("yarn build", &[]),
+            Some("rtk err yarn build".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_just_uses_toml_filter() {
+        assert_eq!(
+            rewrite_command("just pre-commit", &[]),
+            Some("rtk just pre-commit".into())
+        );
+    }
+
+    #[test]
+    fn test_does_not_rewrite_interactive_package_scripts() {
+        assert_eq!(rewrite_command("pnpm dev", &[]), None);
+        assert_eq!(rewrite_command("yarn start", &[]), None);
+        assert_eq!(rewrite_command("pnpm run dev", &[]), None);
+        assert_eq!(rewrite_command("npm run dev", &[]), None);
+        assert_eq!(rewrite_command("pnpm run start", &[]), None);
+    }
+
+    #[test]
+    fn test_does_not_rewrite_package_test_watch_mode() {
+        assert_eq!(rewrite_command("npm test -- --watch", &[]), None);
+        assert_eq!(rewrite_command("pnpm test --watch", &[]), None);
+    }
+
+    #[test]
+    fn test_does_not_rewrite_arbitrary_uv_run() {
+        assert_eq!(rewrite_command("uv run python script.py", &[]), None);
+    }
+
+    #[test]
     fn test_rewrite_pip_list() {
         assert_eq!(
             rewrite_command("pip list", &[]),
@@ -2807,7 +3125,7 @@ mod tests {
     fn test_rewrite_npm_with_args() {
         assert_eq!(
             rewrite_command("npm run test", &[]),
-            Some("rtk npm run test".to_string()),
+            Some("rtk test npm run test".to_string()),
         );
         assert_eq!(
             rewrite_command("npm exec vitest", &[]),

@@ -164,7 +164,12 @@ rewrite_segment(seg, excluded)                     [src/discover/registry.rs]
   |  head -N / --lines=N → rewrite_line_range() → "rtk read file --max-lines N"
   |  tail -N / -n N / --lines N → rewrite_line_range() → "rtk read file --tail-lines N"
   |  head/tail with unsupported flag (-c, -f) → None (skip rewrite)
+  |  source-code cat display commands → "rtk read -l whitespace file.rs"
+  |  cat before a pipe → plain "rtk read file" to preserve pipe input semantics
   |  cat with incompatible flag (-A, -v, -e) → None (skip rewrite)
+  |  uv run pytest / ruff check / mypy → dedicated Python wrappers
+  |  npm/pnpm/yarn test/build/check/typecheck → generic test/error wrappers
+  |  npm/pnpm/yarn dev/start/serve/watch/preview/storybook or test watch mode → None (skip rewrite)
   |
   |  Step 6 — classify_command(cmd_part) [see below]
   |  → Supported → check excluded list → continue

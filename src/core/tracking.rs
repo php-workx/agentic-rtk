@@ -34,7 +34,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 // ── Project path helpers ── // added: project-scoped tracking support
@@ -53,10 +53,17 @@ fn current_project_path_string() -> String {
 /// Uses GLOB instead of LIKE to avoid `_` and `%` in paths acting as wildcards. // changed: GLOB
 fn project_filter_params(project_path: Option<&str>) -> (Option<String>, Option<String>) {
     match project_path {
-        Some(p) => (
-            Some(p.to_string()),
-            Some(format!("{}{}*", p, std::path::MAIN_SEPARATOR)), // changed: GLOB pattern with * wildcard
-        ),
+        Some(p) => {
+            let canonical = std::path::Path::new(p)
+                .canonicalize()
+                .ok()
+                .map(|cp| cp.to_string_lossy().to_string())
+                .unwrap_or_else(|| p.to_string());
+            (
+                Some(canonical.clone()),
+                Some(format!("{}{}*", canonical, std::path::MAIN_SEPARATOR)),
+            )
+        }
         None => (None, None),
     }
 }
@@ -131,6 +138,15 @@ pub struct GainSummary {
     pub by_command: Vec<(String, usize, usize, f64, u64)>,
     /// Last 30 days of activity: (date, saved_tokens)
     pub by_day: Vec<(String, usize)>,
+}
+
+/// Per-feature aggregate statistics.
+#[derive(Debug, Serialize)]
+pub struct FeatureStats {
+    pub feature: String,
+    pub commands: usize,
+    pub saved_tokens: usize,
+    pub avg_savings_pct: f64,
 }
 
 /// Daily statistics for token savings and execution metrics.
@@ -288,6 +304,23 @@ impl Tracker {
             "ALTER TABLE commands ADD COLUMN project_path TEXT DEFAULT ''",
             [],
         );
+        let _ = conn.execute(
+            "ALTER TABLE commands ADD COLUMN feature TEXT DEFAULT 'cli'",
+            [],
+        );
+        let has_null_features: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM commands WHERE feature IS NULL)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        if has_null_features {
+            let _ = conn.execute(
+                "UPDATE commands SET feature = 'cli' WHERE feature IS NULL",
+                [],
+            );
+        }
         // One-time migration: normalize NULLs from pre-default schema // changed: guarded with EXISTS
         let has_nulls: bool = conn
             .query_row(
@@ -307,6 +340,10 @@ impl Tracker {
             "CREATE INDEX IF NOT EXISTS idx_project_path_timestamp ON commands(project_path, timestamp)",
             [],
         );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feature_timestamp ON commands(feature, timestamp)",
+            [],
+        );
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS parse_failures (
@@ -320,6 +357,28 @@ impl Tracker {
         )?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_pf_timestamp ON parse_failures(timestamp)",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS session_compactions (
+                id INTEGER PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                transcript_path TEXT NOT NULL,
+                backup_path TEXT NOT NULL,
+                bytes_in INTEGER NOT NULL,
+                bytes_out INTEGER NOT NULL,
+                percent_saved REAL NOT NULL,
+                read_dedup_hits INTEGER NOT NULL,
+                bash_compact_hits INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                status TEXT NOT NULL
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_compactions_timestamp ON session_compactions(timestamp)",
             [],
         )?;
 
@@ -335,6 +394,7 @@ impl Tracker {
         Ok(tracker)
     }
 
+    #[cfg(test)]
     fn init_schema(&self) -> Result<()> {
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS commands (
@@ -347,7 +407,8 @@ impl Tracker {
                 saved_tokens INTEGER NOT NULL,
                 savings_pct REAL NOT NULL,
                 exec_time_ms INTEGER DEFAULT 0,
-                project_path TEXT DEFAULT ''
+                project_path TEXT DEFAULT '',
+                feature TEXT DEFAULT 'cli'
             )",
             [],
         )?;
@@ -357,6 +418,10 @@ impl Tracker {
         )?;
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_project_path_timestamp ON commands(project_path, timestamp)",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feature_timestamp ON commands(feature, timestamp)",
             [],
         )?;
         self.conn.execute(
@@ -371,6 +436,27 @@ impl Tracker {
         )?;
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_pf_timestamp ON parse_failures(timestamp)",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS session_compactions (
+                id INTEGER PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                transcript_path TEXT NOT NULL,
+                backup_path TEXT NOT NULL,
+                bytes_in INTEGER NOT NULL,
+                bytes_out INTEGER NOT NULL,
+                percent_saved REAL NOT NULL,
+                read_dedup_hits INTEGER NOT NULL,
+                bash_compact_hits INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                status TEXT NOT NULL
+            )",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_compactions_timestamp ON session_compactions(timestamp)",
             [],
         )?;
         Ok(())
@@ -406,6 +492,25 @@ impl Tracker {
         output_tokens: usize,
         exec_time_ms: u64,
     ) -> Result<()> {
+        self.record_with_feature(
+            original_cmd,
+            rtk_cmd,
+            input_tokens,
+            output_tokens,
+            exec_time_ms,
+            "cli",
+        )
+    }
+
+    pub fn record_with_feature(
+        &self,
+        original_cmd: &str,
+        rtk_cmd: &str,
+        input_tokens: usize,
+        output_tokens: usize,
+        exec_time_ms: u64,
+        feature: &str,
+    ) -> Result<()> {
         let saved = input_tokens.saturating_sub(output_tokens);
         let pct = if input_tokens > 0 {
             (saved as f64 / input_tokens as f64) * 100.0
@@ -416,8 +521,8 @@ impl Tracker {
         let project_path = current_project_path_string(); // added: record cwd
 
         self.conn.execute(
-            "INSERT INTO commands (timestamp, original_cmd, rtk_cmd, project_path, input_tokens, output_tokens, saved_tokens, savings_pct, exec_time_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)", // added: project_path
+            "INSERT INTO commands (timestamp, original_cmd, rtk_cmd, project_path, input_tokens, output_tokens, saved_tokens, savings_pct, exec_time_ms, feature)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)", // added: project_path
             params![
                 Utc::now().to_rfc3339(),
                 original_cmd,
@@ -427,12 +532,50 @@ impl Tracker {
                 output_tokens as i64,
                 saved as i64,
                 pct,
-                exec_time_ms as i64
+                exec_time_ms as i64,
+                feature
             ],
         )?;
 
         self.cleanup_old()?;
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_session_compaction(
+        &self,
+        transcript_path: &Path,
+        backup_path: &Path,
+        bytes_in: usize,
+        bytes_out: usize,
+        percent_saved: f64,
+        read_dedup_hits: usize,
+        bash_compact_hits: usize,
+        mode: &str,
+        status: &str,
+    ) -> Result<()> {
+        let session_id = transcript_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        self.conn.execute(
+            "INSERT INTO session_compactions (timestamp, session_id, transcript_path, backup_path, bytes_in, bytes_out, percent_saved, read_dedup_hits, bash_compact_hits, mode, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                Utc::now().to_rfc3339(),
+                session_id,
+                transcript_path.to_string_lossy(),
+                backup_path.to_string_lossy(),
+                bytes_in as i64,
+                bytes_out as i64,
+                percent_saved,
+                read_dedup_hits as i64,
+                bash_compact_hits as i64,
+                mode,
+                status,
+            ],
+        )?;
+        self.cleanup_old()
     }
 
     fn cleanup_old(&self) -> Result<()> {
@@ -445,6 +588,10 @@ impl Tracker {
             "DELETE FROM parse_failures WHERE timestamp < ?1",
             params![cutoff.to_rfc3339()],
         )?;
+        self.conn.execute(
+            "DELETE FROM session_compactions WHERE timestamp < ?1",
+            params![cutoff.to_rfc3339()],
+        )?;
         Ok(())
     }
 
@@ -455,6 +602,7 @@ impl Tracker {
                 "BEGIN;
                  DELETE FROM commands;
                  DELETE FROM parse_failures;
+                 DELETE FROM session_compactions;
                  COMMIT;",
             )
             .context("Failed to reset tracking database")?;
@@ -679,6 +827,28 @@ impl Tracker {
         let mut result: Vec<_> = rows.collect::<Result<Vec<_>, _>>()?;
         result.reverse();
         Ok(result)
+    }
+
+    pub fn get_by_feature(&self, project_path: Option<&str>) -> Result<Vec<FeatureStats>> {
+        let (project_exact, project_glob) = project_filter_params(project_path);
+        let mut stmt = self.conn.prepare(
+            "SELECT feature, COUNT(*), SUM(saved_tokens), AVG(savings_pct)
+             FROM commands
+             WHERE (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2)
+             GROUP BY feature
+             ORDER BY SUM(saved_tokens) DESC",
+        )?;
+
+        let rows = stmt.query_map(params![project_exact, project_glob], |row| {
+            Ok(FeatureStats {
+                feature: row.get(0)?,
+                commands: row.get::<_, i64>(1)? as usize,
+                saved_tokens: row.get::<_, i64>(2)? as usize,
+                avg_savings_pct: row.get(3)?,
+            })
+        })?;
+
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     /// Get daily statistics for all recorded days.
@@ -1353,17 +1523,29 @@ impl TimedExecution {
     /// timer.track("ls -la", "rtk ls", input, output);
     /// ```
     pub fn track(&self, original_cmd: &str, rtk_cmd: &str, input: &str, output: &str) {
+        self.track_with_feature(original_cmd, rtk_cmd, input, output, "cli");
+    }
+
+    pub fn track_with_feature(
+        &self,
+        original_cmd: &str,
+        rtk_cmd: &str,
+        input: &str,
+        output: &str,
+        feature: &str,
+    ) {
         let elapsed_ms = self.start.elapsed().as_millis() as u64;
         let input_tokens = estimate_tokens(input);
         let output_tokens = estimate_tokens(output);
 
         if let Ok(tracker) = Tracker::new() {
-            let _ = tracker.record(
+            let _ = tracker.record_with_feature(
                 original_cmd,
                 rtk_cmd,
                 input_tokens,
                 output_tokens,
                 elapsed_ms,
+                feature,
             );
         }
     }
@@ -1421,6 +1603,12 @@ pub fn args_display(args: &[OsString]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn db_path_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     // 1. estimate_tokens — verify ~4 chars/token ratio
     #[test]
@@ -1465,6 +1653,45 @@ mod tests {
 
         assert_eq!(test_record.saved_tokens, 80);
         assert_eq!(test_record.savings_pct, 80.0);
+    }
+
+    #[test]
+    fn test_record_with_feature_and_get_by_feature() {
+        let tracker = Tracker::new().expect("Failed to create tracker");
+        let pid = std::process::id();
+        let cmd = format!("rtk session compact test_{}", pid);
+        tracker
+            .record_with_feature("session compact", &cmd, 1000, 250, 0, "session")
+            .expect("Failed to record feature");
+
+        let features = tracker.get_by_feature(None).expect("feature stats");
+        let session = features
+            .iter()
+            .find(|f| f.feature == "session")
+            .expect("session feature not found");
+        assert!(session.commands >= 1);
+        assert!(session.saved_tokens >= 750);
+    }
+
+    #[test]
+    fn test_record_session_compaction() {
+        let tracker = Tracker::new().expect("Failed to create tracker");
+        let pid = std::process::id();
+        let transcript = PathBuf::from(format!("/tmp/rtk-session-{pid}.jsonl"));
+        let backup = PathBuf::from(format!("/tmp/rtk-session-{pid}.bak.jsonl"));
+        tracker
+            .record_session_compaction(
+                &transcript,
+                &backup,
+                10_000,
+                7_500,
+                25.0,
+                2,
+                3,
+                "auto",
+                "applied",
+            )
+            .expect("Failed to record session compaction");
     }
 
     // 4. track_passthrough doesn't dilute stats (input=0, output=0)
@@ -1553,18 +1780,34 @@ mod tests {
         static ENV_LOCK: Mutex<()> = Mutex::new(());
         let _guard = ENV_LOCK.lock().unwrap();
 
+        let _guard = db_path_env_lock().lock().unwrap();
         let custom_path = env::temp_dir().join("rtk_test_custom.db");
         env::set_var("RTK_DB_PATH", &custom_path);
         let db_path = get_db_path().expect("Failed to get db path");
         assert_eq!(db_path, custom_path);
 
         env::remove_var("RTK_DB_PATH");
+    }
+
+    // 8. get_db_path falls back to default when no custom env/config path exists
+    #[test]
+    fn test_default_db_path() {
+        use std::env;
+
+        let _guard = db_path_env_lock().lock().unwrap();
+        // Ensure no env var is set
+        env::remove_var("RTK_DB_PATH");
+
         let db_path = get_db_path().expect("Failed to get db path");
-        assert!(
-            db_path.ends_with("rtk/history.db"),
-            "expected default path ending with rtk/history.db, got: {}",
-            db_path.display()
-        );
+        if let Some(configured_path) = crate::core::config::Config::load()
+            .ok()
+            .and_then(|config| config.tracking.database_path)
+        {
+            assert_eq!(db_path, configured_path);
+        } else {
+            let data_dir = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
+            assert_eq!(db_path, data_dir.join(RTK_DATA_DIR).join(HISTORY_DB));
+        }
     }
 
     // 9. project_filter_params uses GLOB pattern with * wildcard // added

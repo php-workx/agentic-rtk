@@ -35,6 +35,44 @@
 
 rtk filters and compresses command outputs before they reach your LLM context. Single Rust binary, 100+ supported commands, <10ms overhead.
 
+## What This Fork Changes (Context Zip)
+
+This fork adds **Context Zip** — an additional compression layer that runs *after* the existing language-specific filters. It targets the noisy, repetitive output that still slips through: stack traces, package-install logs, build diagnostics, and raw HTML.
+
+### The Four Compressors
+
+| Compressor | What it does | When it triggers |
+|------------|-------------|------------------|
+| **Stacktrace** | Auto-detects Node.js, Python, Rust, Go, and Java stack traces; deduplicates repeated frames; collapses framework/library frames (e.g. `node_modules`, `std::`, `site-packages`) | Any stderr or test output containing stack frames |
+| **Package Install** | Strips npm/pnpm/pip/cargo progress bars, "already satisfied", and funding banners; preserves security lines (`CVE-`, `GHSA-`, audit warnings); collapses summaries to one line | `npm install`, `pnpm install`, `pip install`, `cargo build` |
+| **Build Group** | Groups compiler/typechecker errors by error code (TypeScript `TS1234`, Cargo `E0123`, mypy, pylint) and lists every affected (`file:line`) in a single block | `cargo build` / `check` / `clippy`, `tsc`, `mypy`, `pylint` when >=2 identical codes appear |
+| **Web Extract** | Parses HTML with `scraper`, drops navigation/chrome, extracts `<main>` / `<article>` / `<body>` text; also available as `rtk web <url>` | `rtk web`, or any HTML returned by `curl`/`wget` |
+
+All compressors are **conservative**: they only keep the result when the output is strictly smaller. Unrecognized formats pass through untouched.
+
+### Which Commands Opt In
+
+| Command | Compressors Applied |
+|---------|---------------------|
+| `npm install` / `pnpm install` | PackageInstall + Stacktrace |
+| `npm <other>` / `pnpm <other>` | Stacktrace |
+| `cargo test` | Stacktrace + failure fallback (shows raw stderr tail on non-zero exit) |
+| `cargo build` / `check` / `clippy` | BuildGroup |
+| `pip install` | PackageInstall |
+| `pytest` / `mypy` / `ruff` | Stacktrace or BuildGroup |
+| `docker` / `kubectl` / `grep` / `curl` / `wget` | Varies; some get Stacktrace |
+
+### Tracking & Telemetry
+
+When a compressor delivers savings, RTK tags the command in the local SQLite database with the winning feature (`stacktrace`, `pkg-install`, `build-group`, or `web-extract`). This powers:
+
+- `rtk gain --by-feature` — shows a per-feature breakdown of commands, tokens saved, and average savings percentage.
+- The `session_compactions` table also tracks transcript compaction stats separately so live command savings and historical session compaction never double-count.
+
+> **Example:** `rtk gain --by-feature`  
+> `pkg-install`: 1,240 commands, 890K tokens saved, 72% avg  
+> `stacktrace`: 312 commands, 410K tokens saved, 68% avg
+
 ## Token Savings (30-min Claude Code Session)
 
 | Operation | Frequency | Standard | rtk | Savings |
@@ -60,13 +98,14 @@ rtk filters and compresses command outputs before they reach your LLM context. S
 ### Homebrew (recommended)
 
 ```bash
+brew tap php-workx/tap
 brew install rtk
 ```
 
 ### Quick Install (Linux/macOS)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/php-workx/agentic-rtk/refs/heads/main/install.sh | sh
 ```
 
 > Installs to `~/.local/bin`. Add to PATH if needed:
@@ -77,12 +116,12 @@ curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/instal
 ### Cargo
 
 ```bash
-cargo install --git https://github.com/rtk-ai/rtk
+cargo install --git https://github.com/php-workx/agentic-rtk
 ```
 
 ### Pre-built Binaries
 
-Download from [releases](https://github.com/rtk-ai/rtk/releases):
+Download from [releases](https://github.com/php-workx/agentic-rtk/releases):
 - macOS: `rtk-x86_64-apple-darwin.tar.gz` / `rtk-aarch64-apple-darwin.tar.gz`
 - Linux: `rtk-x86_64-unknown-linux-musl.tar.gz` / `rtk-aarch64-unknown-linux-gnu.tar.gz`
 - Windows: `rtk-x86_64-pc-windows-msvc.zip`
@@ -237,6 +276,7 @@ rtk env -f AWS                  # Filtered env vars
 rtk log app.log                 # Deduplicated logs
 rtk curl <url>                  # Truncate + save full output
 rtk wget <url>                  # Download, strip progress bars
+rtk web <url>                   # Extract readable web page text
 rtk summary <long command>      # Heuristic summary
 rtk proxy <command>             # Raw passthrough + tracking
 ```
@@ -321,7 +361,7 @@ For the best experience, use [WSL](https://learn.microsoft.com/en-us/windows/wsl
 
 ```bash
 # Inside WSL
-curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/php-workx/agentic-rtk/refs/heads/main/install.sh | sh
 rtk init -g
 ```
 
@@ -475,7 +515,7 @@ export RTK_TELEMETRY_DISABLED=1   # Blocks telemetry regardless of consent
 
 ## Contributing
 
-Contributions welcome! Please open an issue or PR on [GitHub](https://github.com/rtk-ai/rtk).
+Contributions welcome! Please open an issue or PR on [GitHub](https://github.com/php-workx/agentic-rtk).
 
 Join the community on [Discord](https://discord.gg/RySmvNF5kF).
 

@@ -46,5 +46,8 @@ claudedocs
 .vitals/
 .worktrees/
 
-# icm 
+# icm
 .fastembed_cache/
+
+.serena
+package-lock.json

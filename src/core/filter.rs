@@ -7,6 +7,7 @@ use std::str::FromStr;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterLevel {
     None,
+    Whitespace,
     Minimal,
     Aggressive,
 }
@@ -17,6 +18,7 @@ impl FromStr for FilterLevel {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "none" => Ok(FilterLevel::None),
+            "whitespace" => Ok(FilterLevel::Whitespace),
             "minimal" => Ok(FilterLevel::Minimal),
             "aggressive" => Ok(FilterLevel::Aggressive),
             _ => Err(format!("Unknown filter level: {}", s)),
@@ -28,6 +30,7 @@ impl std::fmt::Display for FilterLevel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FilterLevel::None => write!(f, "none"),
+            FilterLevel::Whitespace => write!(f, "whitespace"),
             FilterLevel::Minimal => write!(f, "minimal"),
             FilterLevel::Aggressive => write!(f, "aggressive"),
         }
@@ -157,7 +160,18 @@ pub struct MinimalFilter;
 
 lazy_static! {
     static ref MULTIPLE_BLANK_LINES: Regex = Regex::new(r"\n{3,}").unwrap();
-    static ref TRAILING_WHITESPACE: Regex = Regex::new(r"[ \t]+$").unwrap();
+    static ref TRAILING_WHITESPACE: Regex = Regex::new(r"(?m)[ \t]+$").unwrap();
+}
+
+pub struct WhitespaceFilter;
+
+impl FilterStrategy for WhitespaceFilter {
+    fn filter(&self, content: &str, _lang: &Language) -> String {
+        let result = TRAILING_WHITESPACE.replace_all(content, "");
+        MULTIPLE_BLANK_LINES
+            .replace_all(&result, "\n\n")
+            .to_string()
+    }
 }
 
 impl FilterStrategy for MinimalFilter {
@@ -315,6 +329,7 @@ impl FilterStrategy for AggressiveFilter {
 pub fn get_filter(level: FilterLevel) -> Box<dyn FilterStrategy> {
     match level {
         FilterLevel::None => Box::new(NoFilter),
+        FilterLevel::Whitespace => Box::new(WhitespaceFilter),
         FilterLevel::Minimal => Box::new(MinimalFilter),
         FilterLevel::Aggressive => Box::new(AggressiveFilter),
     }
@@ -369,6 +384,10 @@ mod tests {
     fn test_filter_level_parsing() {
         assert_eq!(FilterLevel::from_str("none").unwrap(), FilterLevel::None);
         assert_eq!(
+            FilterLevel::from_str("whitespace").unwrap(),
+            FilterLevel::Whitespace
+        );
+        assert_eq!(
             FilterLevel::from_str("minimal").unwrap(),
             FilterLevel::Minimal
         );
@@ -376,6 +395,7 @@ mod tests {
             FilterLevel::from_str("aggressive").unwrap(),
             FilterLevel::Aggressive
         );
+        assert_eq!(FilterLevel::Whitespace.to_string(), "whitespace");
     }
 
     #[test]
@@ -468,6 +488,18 @@ fn main() {
         let result = filter.filter(code, &Language::Rust);
         assert!(!result.contains("// This is a comment"));
         assert!(result.contains("fn main()"));
+    }
+
+    #[test]
+    fn test_whitespace_filter_only_trims_and_collapses_blank_lines() {
+        let code = "use std::fmt;   \n\n\n\n// keep this comment  \nfn main() {  \n    println!(\"hi\"); \t\n}\n";
+        let filter = WhitespaceFilter;
+        let result = filter.filter(code, &Language::Rust);
+
+        assert_eq!(
+            result,
+            "use std::fmt;\n\n// keep this comment\nfn main() {\n    println!(\"hi\");\n}\n"
+        );
     }
 
     // --- truncation accuracy ---

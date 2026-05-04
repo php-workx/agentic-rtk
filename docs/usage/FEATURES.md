@@ -985,6 +985,16 @@ Supprime les barres de progression et le bruit.
 
 ---
 
+### `rtk web` -- Extraction de page web lisible
+
+```bash
+rtk web <url>
+```
+
+Recupere une page web et extrait le contenu HTML lisible.
+
+---
+
 ### `rtk summary` -- Resume heuristique
 
 **Objectif :** Execute une commande et genere un resume heuristique de la sortie.
@@ -1275,6 +1285,7 @@ rtk verify
 | `docker ps/images/logs` | `rtk docker ...` |
 | `kubectl get/logs` | `rtk kubectl ...` |
 | `curl` | `rtk curl` |
+| `web page fetch` | `rtk web <url>` |
 | `pnpm list/outdated` | `rtk pnpm ...` |
 
 ### Exclusion de commandes
@@ -1409,7 +1420,7 @@ Aucune donnee personnelle, aucun contenu de commande, aucun chemin de fichier n'
 | **Build/Lint** | cargo build, tsc, eslint, prettier, next, ruff, clippy | 70-87% |
 | **Paquets** | pnpm, npm, pip, deps, prisma | 60-80% |
 | **Conteneurs** | docker, kubectl | 70-80% |
-| **Donnees** | json, env, log, curl, wget | 60-80% |
+| **Donnees** | json, env, log, curl, wget, web | 60-80% |
 | **Analytique** | gain, discover, learn, cc-economics | N/A (meta) |
 
 ---

@@ -114,7 +114,7 @@ Typical savings: 60-99%.
 | `grep` | 70% | Truncated lines, grouped by file |
 | `diff` | 65% | Context reduced |
 | `wc` | 60% | Compact counts |
-| `cat` / `head` / `tail <file>` | 60-80% | Smart file reading via `rtk read` |
+| `cat` / `head` / `tail <file>` | 60-80% | Smart file reading via `rtk read`; source-code `cat` display commands use whitespace-only compaction |
 | `rtk smart <file>` | 85% | 2-line heuristic code summary (signatures only) |
 
 ## Cloud and Data
