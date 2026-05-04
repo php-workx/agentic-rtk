@@ -1630,9 +1630,12 @@ fn parse_duration(value: &str) -> Result<Duration> {
         .with_context(|| format!("Invalid duration `{value}`"))?;
     let secs = match unit {
         "s" => n,
-        "m" => n * 60,
-        "h" => n * 3600,
-        "d" => n * 86400,
+        "m" => n.checked_mul(60)
+            .with_context(|| format!("Duration `{value}` overflows u64"))?,
+        "h" => n.checked_mul(3600)
+            .with_context(|| format!("Duration `{value}` overflows u64"))?,
+        "d" => n.checked_mul(86400)
+            .with_context(|| format!("Duration `{value}` overflows u64"))?,
         _ => bail!("Invalid duration `{value}`; use s, m, h, or d"),
     };
     Ok(Duration::from_secs(secs))

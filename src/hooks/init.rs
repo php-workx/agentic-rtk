@@ -529,10 +529,13 @@ fn remove_session_hook_entries(session_end: &mut serde_json::Value) -> bool {
         return false;
     };
     let original_len = arr.len();
-    arr.retain(|entry| {
-        if let Some(hooks_array) = entry.get("hooks").and_then(|h| h.as_array()) {
-            for hook in hooks_array {
-                if hook
+    let mut removed_any = false;
+
+    for entry in arr.iter_mut() {
+        if let Some(hooks) = entry.get_mut("hooks").and_then(|h| h.as_array_mut()) {
+            let hooks_original_len = hooks.len();
+            hooks.retain(|hook| {
+                !hook
                     .get("command")
                     .and_then(|c| c.as_str())
                     .is_some_and(|cmd| {
@@ -544,14 +547,22 @@ fn remove_session_hook_entries(session_end: &mut serde_json::Value) -> bool {
                                 | "rtk session hook"
                         )
                     })
-                {
-                    return false;
-                }
+            });
+            if hooks.len() < hooks_original_len {
+                removed_any = true;
             }
         }
-        true
+    }
+
+    // Drop entries whose hooks array is now empty
+    arr.retain(|entry| {
+        entry
+            .get("hooks")
+            .and_then(|h| h.as_array())
+            .map_or(true, |h| !h.is_empty())
     });
-    arr.len() < original_len
+
+    removed_any || arr.len() < original_len
 }
 
 /// Remove RTK hook from settings.json file

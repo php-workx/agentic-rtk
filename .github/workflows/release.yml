@@ -301,12 +301,12 @@ jobs:
             end
           end
           FORMULA
-          sed -i "s/VERSION_PLACEHOLDER/${{ steps.version.outputs.version }}/g" rtk.rb
-          sed -i "s/TAG_PLACEHOLDER/${{ steps.version.outputs.tag }}/g" rtk.rb
-          sed -i "s/SHA_MAC_ARM_PLACEHOLDER/${{ steps.sha.outputs.mac_arm }}/g" rtk.rb
-          sed -i "s/SHA_MAC_INTEL_PLACEHOLDER/${{ steps.sha.outputs.mac_intel }}/g" rtk.rb
-          sed -i "s/SHA_LINUX_ARM_PLACEHOLDER/${{ steps.sha.outputs.linux_arm }}/g" rtk.rb
-          sed -i "s/SHA_LINUX_INTEL_PLACEHOLDER/${{ steps.sha.outputs.linux_intel }}/g" rtk.rb
+          sed -i "s#VERSION_PLACEHOLDER#${{ steps.version.outputs.version }}#g" rtk.rb
+          sed -i "s#TAG_PLACEHOLDER#${{ steps.version.outputs.tag }}#g" rtk.rb
+          sed -i "s#SHA_MAC_ARM_PLACEHOLDER#${{ steps.sha.outputs.mac_arm }}#g" rtk.rb
+          sed -i "s#SHA_MAC_INTEL_PLACEHOLDER#${{ steps.sha.outputs.mac_intel }}#g" rtk.rb
+          sed -i "s#SHA_LINUX_ARM_PLACEHOLDER#${{ steps.sha.outputs.linux_arm }}#g" rtk.rb
+          sed -i "s#SHA_LINUX_INTEL_PLACEHOLDER#${{ steps.sha.outputs.linux_intel }}#g" rtk.rb
           # Remove leading spaces from heredoc
           sed -i 's/^          //' rtk.rb
 
