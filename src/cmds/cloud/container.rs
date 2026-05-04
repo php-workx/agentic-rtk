@@ -1,5 +1,7 @@
 //! Filters Docker and kubectl output into compact summaries.
 
+// AGENTIC-RTK-FORK: This file contains fork-specific modifications. See FORK.md.
+
 use crate::core::runner::{self, RunOptions};
 use crate::core::stream::exec_capture;
 use crate::core::tracking;

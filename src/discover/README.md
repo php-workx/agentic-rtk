@@ -1,3 +1,5 @@
+// AGENTIC-RTK-FORK: This file contains fork-specific modifications. See FORK.md.
+
 # Discover — History Analysis & Command Rewrite
 
 > Full rewrite pipeline diagram: [docs/contributing/TECHNICAL.md](../../docs/contributing/TECHNICAL.md#32-hook-interception-command-rewriting)

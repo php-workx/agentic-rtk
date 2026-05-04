@@ -1,5 +1,7 @@
 //! Filters pnpm output — dependency trees, install logs, outdated packages.
 
+// AGENTIC-RTK-FORK: This file contains fork-specific modifications. See FORK.md.
+
 use crate::core::postprocess::package_install::compress_pkg_log;
 use crate::core::stream::exec_capture;
 use crate::core::tracking;

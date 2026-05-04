@@ -29,6 +29,8 @@
 //!
 //! See [docs/tracking.md](../docs/tracking.md) for full documentation.
 
+// AGENTIC-RTK-FORK: This file contains fork-specific modifications. See FORK.md.
+
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};

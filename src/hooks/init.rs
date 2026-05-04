@@ -1,5 +1,7 @@
 //! Sets up RTK hooks so AI coding agents automatically route commands through RTK.
 
+// AGENTIC-RTK-FORK: This file contains fork-specific modifications. See FORK.md.
+
 use anyhow::{Context, Result};
 use std::fs;
 use std::io::Write;

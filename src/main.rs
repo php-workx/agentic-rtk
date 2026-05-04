@@ -1,3 +1,5 @@
+// AGENTIC-RTK-FORK: This file contains fork-specific modifications. See FORK.md.
+
 mod analytics;
 mod cmds;
 mod core;
@@ -6,6 +8,9 @@ mod hooks;
 mod learn;
 mod parser;
 mod session;
+// AGENTIC-RTK-FORK: Add fork gate module. See FORK.md.
+mod fork;
+// END AGENTIC-RTK-FORK
 
 // Re-export command modules for routing
 use cmds::cloud::{aws_cmd, container, curl_cmd, psql_cmd, web_cmd, wget_cmd};

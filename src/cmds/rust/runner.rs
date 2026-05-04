@@ -1,5 +1,7 @@
 //! Runs arbitrary commands and captures only stderr or test failures.
 
+// AGENTIC-RTK-FORK: This file contains fork-specific modifications. See FORK.md.
+
 use crate::core::postprocess::PostprocessKind;
 use anyhow::Result;
 use lazy_static::lazy_static;

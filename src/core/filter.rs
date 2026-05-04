@@ -1,5 +1,7 @@
 //! Strips comments and boilerplate from source code to save tokens.
 
+// AGENTIC-RTK-FORK: This file contains fork-specific modifications. See FORK.md.
+
 use lazy_static::lazy_static;
 use regex::Regex;
 use std::str::FromStr;

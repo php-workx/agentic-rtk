@@ -1,5 +1,7 @@
 //! Building blocks shared across all RTK modules.
 
+// AGENTIC-RTK-FORK: This file contains fork-specific modifications. See FORK.md.
+
 pub mod config;
 pub mod constants;
 pub mod display_helpers;

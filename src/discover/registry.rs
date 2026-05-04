@@ -1,5 +1,7 @@
 //! Matches shell commands against known RTK rewrite rules to decide how to handle them.
 
+// AGENTIC-RTK-FORK: This file contains fork-specific modifications. See FORK.md.
+
 use lazy_static::lazy_static;
 use regex::{Regex, RegexSet};
 

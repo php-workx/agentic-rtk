@@ -1,5 +1,7 @@
 //! Filters npm output and auto-injects the "run" subcommand when appropriate.
 
+// AGENTIC-RTK-FORK: This file contains fork-specific modifications. See FORK.md.
+
 use crate::core::postprocess::PostprocessKind;
 use crate::core::runner;
 use crate::core::utils::resolved_command;

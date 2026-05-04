@@ -1,5 +1,7 @@
 //! Shows users how many tokens RTK has saved them over time.
 
+// AGENTIC-RTK-FORK: This file contains fork-specific modifications. See FORK.md.
+
 use crate::core::display_helpers::{format_duration, print_period_table};
 use crate::core::tracking::{DayStats, MonthStats, Tracker, WeekStats};
 use crate::core::utils::format_tokens;

@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Fork Audit Script
+# Cross-checks AGENTIC-RTK-FORK sentinels against FORK.md registry.
+# Run before every rebase. CI runs this on every PR.
+
+set -euo pipefail
+
+SENTINEL="AGENTIC-RTK-FORK"
+REGISTRY="FORK.md"
+TMPDIR=$(mktemp -d)
+trap "rm -rf $TMPDIR" EXIT
+
+# ── 1. Collect sentinels from source ──
+echo "=== Step 1: Collect sentinels from source ==="
+grep -rn "${SENTINEL}" src/ scripts/ .github/ 2>/dev/null \
+    | grep -v "^FORK.md:" \
+    | grep -v "fork-audit" \
+    | grep -v "target/" \
+    | grep -v "\.git/" \
+    | sort > "${TMPDIR}/sentinels.txt"
+
+SENTINEL_COUNT=$(wc -l < "${TMPDIR}/sentinels.txt" | tr -d ' ')
+echo "Found ${SENTINEL_COUNT} sentinel lines"
+
+# Extract unique file paths from sentinels
+awk -F: '{print $1}' "${TMPDIR}/sentinels.txt" | sort -u > "${TMPDIR}/sentinel_files.txt"
+
+# ── 2. Collect registry entries ──
+echo ""
+echo "=== Step 2: Collect registry entries ==="
+awk '
+    /^## Registry/ { in_registry=1; next }
+    in_registry && /^## / { exit }
+    in_registry && /^\| `src\// {
+        gsub(/^\| `/, ""); gsub(/` \|/, "")
+        print $1
+    }
+' "${REGISTRY}" | sort -u > "${TMPDIR}/registry_files.txt"
+
+REGISTRY_COUNT=$(wc -l < "${TMPDIR}/registry_files.txt" | tr -d ' ')
+echo "Found ${REGISTRY_COUNT} registry entries"
+
+# ── 3. Check: every sentinel file has a registry entry ──
+echo ""
+echo "=== Step 3: Sentinel → Registry cross-check ==="
+MISSING_REGISTRY=0
+while read -r file; do
+    if ! grep -q "^${file}$" "${TMPDIR}/registry_files.txt"; then
+        echo "  FAIL: ${file} has sentinels but no registry entry in ${REGISTRY}"
+        MISSING_REGISTRY=1
+    fi
+done < "${TMPDIR}/sentinel_files.txt"
+
+if [ "$MISSING_REGISTRY" -eq 0 ]; then
+    echo "  PASS: All sentinel files are registered"
+fi
+
+# ── 4. Check: every registry entry has sentinels ──
+echo ""
+echo "=== Step 4: Registry → Sentinel cross-check ==="
+MISSING_SENTINEL=0
+while read -r file; do
+    if ! grep -q "^${file}$" "${TMPDIR}/sentinel_files.txt"; then
+        echo "  WARN: ${file} is in registry but has no sentinels (may be a fork-owned file or pure addition)"
+        MISSING_SENTINEL=1
+    fi
+done < "${TMPDIR}/registry_files.txt"
+
+if [ "$MISSING_SENTINEL" -eq 0 ]; then
+    echo "  PASS: All registry entries have sentinels"
+fi
+
+# ── 5. Verify no orphaned FORK markers ──
+echo ""
+echo "=== Step 5: Orphaned marker check ==="
+ORPHANS=$(grep -rn "FORK" src/ scripts/ .github/ 2>/dev/null \
+    | grep -v "${SENTINEL}" \
+    | grep -v "${REGISTRY}" \
+    | grep -v "target/" \
+    | grep -v "\.git/" \
+    | grep -v "fork-audit" \
+    | grep -v "\.md:" \
+    | grep -v "fork_owned" \
+    | grep -v "fork_owned" \
+    || true)
+
+if [ -n "$ORPHANS" ]; then
+    echo "  WARN: Possible orphaned FORK markers found:"
+    echo "$ORPHANS"
+else
+    echo "  PASS: No orphaned FORK markers"
+fi
+
+# ── Summary ──
+echo ""
+echo "=========================================="
+if [ "$MISSING_REGISTRY" -eq 0 ] && [ "$MISSING_SENTINEL" -eq 0 ]; then
+    echo "✓ Fork audit PASSED"
+    exit 0
+else
+    echo "✗ Fork audit FAILED"
+    exit 1
+fi

@@ -1,5 +1,7 @@
 //! Filters cargo output — build errors, test results, clippy warnings.
 
+// AGENTIC-RTK-FORK: This file contains fork-specific modifications. See FORK.md.
+
 use crate::core::runner;
 use crate::core::stream::{BlockHandler, BlockStreamFilter, StreamFilter};
 use crate::core::tracking;

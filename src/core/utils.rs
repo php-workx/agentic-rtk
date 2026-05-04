@@ -5,6 +5,8 @@
 //! - Text truncation
 //! - Command execution with error context
 
+// AGENTIC-RTK-FORK: This file contains fork-specific modifications. See FORK.md.
+
 use anyhow::{Context, Result};
 use regex::Regex;
 use std::path::PathBuf;

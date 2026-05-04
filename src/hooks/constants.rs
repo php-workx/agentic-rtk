@@ -1,3 +1,5 @@
+// AGENTIC-RTK-FORK: This file contains fork-specific modifications. See FORK.md.
+
 pub const REWRITE_HOOK_FILE: &str = "rtk-rewrite.sh";
 pub const GEMINI_HOOK_FILE: &str = "rtk-hook-gemini.sh";
 pub const CLAUDE_DIR: &str = ".claude";

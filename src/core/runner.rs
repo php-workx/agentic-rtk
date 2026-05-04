@@ -1,5 +1,7 @@
 //! Shared command execution skeleton for filter modules.
 
+// AGENTIC-RTK-FORK: This file contains fork-specific modifications. See FORK.md.
+
 use anyhow::{Context, Result};
 use std::process::Command;
 

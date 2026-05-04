@@ -1,5 +1,7 @@
 //! Filters grep output by grouping matches by file.
 
+// AGENTIC-RTK-FORK: This file contains fork-specific modifications. See FORK.md.
+
 use crate::core::config;
 use crate::core::stream::exec_capture;
 use crate::core::tracking;

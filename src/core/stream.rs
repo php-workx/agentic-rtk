@@ -1,3 +1,5 @@
+// AGENTIC-RTK-FORK: This file contains fork-specific modifications. See FORK.md.
+
 use anyhow::{Context, Result};
 use regex::Regex;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
