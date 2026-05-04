@@ -568,6 +568,7 @@ fn compact_path(
     let sidecar = sidecar_path(session_path);
     fs::write(&sidecar, compressed)
         .with_context(|| format!("Failed to write sidecar {}", sidecar.display()))?;
+    save_manifest(session_path, &manifest)?;
     Ok(CompactOutcome {
         session_path: session_path.to_path_buf(),
         sidecar_path: Some(sidecar),
@@ -681,6 +682,7 @@ struct ToolUseInfo {
 #[derive(Debug, Clone)]
 struct FirstRead {
     tool_use_id: String,
+    content_hash: Option<String>,
 }
 
 fn index_record(
@@ -733,11 +735,40 @@ fn index_claude_record(
                     .entry(path.clone())
                     .or_insert_with(|| FirstRead {
                         tool_use_id: id.to_string(),
+                        content_hash: None,
                     });
             }
         }
 
         tool_use_index.insert(id.to_string(), ToolUseInfo { name, file_path });
+    }
+
+    // Also index tool_result blocks to capture Read content hashes for safe dedup
+    for block in content {
+        if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+            continue;
+        }
+        let Some(tool_use_id) = block.get("tool_use_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let info = match tool_use_index.get(tool_use_id) {
+            Some(i) if i.name == "Read" && i.file_path.is_some() => i,
+            _ => continue,
+        };
+        let path = info.file_path.as_deref().unwrap();
+        let content_text = block
+            .pointer("/content/0/text")
+            .and_then(Value::as_str)
+            .or_else(|| block.get("content").and_then(|c| c.as_str()))
+            .unwrap_or("");
+        let hash = format!("{:x}", Sha256::digest(content_text.as_bytes()));
+        first_read_for
+            .entry(path.to_string())
+            .and_modify(|fr| fr.content_hash = Some(hash.clone()))
+            .or_insert_with(|| FirstRead {
+                tool_use_id: tool_use_id.to_string(),
+                content_hash: Some(hash),
+            });
     }
 }
 
@@ -857,6 +888,19 @@ fn rewrite_claude_record(
                     if let Some(path) = info.file_path.as_deref() {
                         if let Some(first) = first_read_for.get(path) {
                             if first.tool_use_id != use_id {
+                                // Only dedup if content hash matches (or no hash available for back-compat)
+                                let current_hash = block
+                                    .pointer("/content/0/text")
+                                    .and_then(Value::as_str)
+                                    .or_else(|| block.get("content").and_then(|c| c.as_str()))
+                                    .map(|text| format!("{:x}", Sha256::digest(text.as_bytes())));
+                                let should_dedup = match (&first.content_hash, current_hash) {
+                                    (Some(first_hash), Some(current_hash)) => first_hash == &current_hash,
+                                    _ => true, // Fallback to path-only dedup when hashes unavailable
+                                };
+                                if !should_dedup {
+                                    continue;
+                                }
                                 replace_with_read_ref(
                                     block,
                                     path,

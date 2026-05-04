@@ -17,12 +17,13 @@ pub fn extract_content(input: &str) -> String {
 
     let document = Html::parse_document(input);
     let mut output = String::new();
-    let main_selector = Selector::parse("main, article").expect("valid selector");
+    let main_selector = Selector::parse("main").expect("valid selector");
+    let article_selector = Selector::parse("article").expect("valid selector");
 
-    if document.select(&main_selector).next().is_some() {
-        for element in document.select(&main_selector) {
-            extract_element_text(&element, &mut output);
-        }
+    if let Some(main) = document.select(&main_selector).next() {
+        extract_element_text(&main, &mut output);
+    } else if let Some(article) = document.select(&article_selector).next() {
+        extract_element_text(&article, &mut output);
     } else if let Some(body) = document
         .select(&Selector::parse("body").expect("valid selector"))
         .next()

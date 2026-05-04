@@ -253,7 +253,7 @@ pub fn run(
         return run_codex_mode(global, session_compaction, verbose);
     }
 
-    let session_compaction = session_compaction || (global && install_claude && !claude_md);
+    let session_compaction = session_compaction;
 
     // Validation: Global-only features
     if install_opencode && !global {
@@ -1703,7 +1703,7 @@ fn run_codex_mode_with_paths(
             agents_md_path.display()
         );
     }
-    if session_compaction {
+    if session_compaction && global {
         patch_codex_session_compaction_hook(verbose)?;
     }
 

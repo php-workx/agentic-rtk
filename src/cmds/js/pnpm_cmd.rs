@@ -445,13 +445,22 @@ fn run_install(packages: &[String], args: &[String], verbose: u8) -> Result<i32>
 
     println!("{}", filtered);
 
-    timer.track_with_feature(
-        &format!("pnpm install {}", packages.join(" ")),
-        &format!("rtk pnpm install {}", packages.join(" ")),
-        &combined,
-        &filtered,
-        "pkg-install",
-    );
+    if combined != filtered {
+        timer.track_with_feature(
+            &format!("pnpm install {}", packages.join(" ")),
+            &format!("rtk pnpm install {}", packages.join(" ")),
+            &combined,
+            &filtered,
+            "pkg-install",
+        );
+    } else {
+        timer.track(
+            &format!("pnpm install {}", packages.join(" ")),
+            &format!("rtk pnpm install {}", packages.join(" ")),
+            &combined,
+            &filtered,
+        );
+    }
 
     Ok(0)
 }

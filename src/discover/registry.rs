@@ -925,8 +925,8 @@ fn rewrite_segment_inner(seg: &str, excluded: &[ExcludePattern], depth: usize) -
         return None;
     }
 
-    if cmd_part.starts_with("head -") || cmd_part.starts_with("tail ") {
-        return rewrite_line_range(cmd_part).map(|r| format!("{}{}", r, redirect_suffix));
+    if cmd_clean.starts_with("head -") || cmd_clean.starts_with("tail ") {
+        return rewrite_line_range(cmd_clean).map(|r| format!("{}{}", r, redirect_suffix));
     }
 
     if starts_with_command_word(cmd_clean, "cat") {

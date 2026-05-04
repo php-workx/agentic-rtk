@@ -170,8 +170,9 @@ fn add_group(
     file: &str,
     line: usize,
 ) {
+    let key = format!("{}:{}", code, message);
     let group = groups
-        .entry(code.to_string())
+        .entry(key)
         .or_insert_with(|| ErrorGroup::new(code, message));
     group.add_location(file, line);
 }

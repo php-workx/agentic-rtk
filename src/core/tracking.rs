@@ -581,6 +581,10 @@ impl Tracker {
             "DELETE FROM parse_failures WHERE timestamp < ?1",
             params![cutoff.to_rfc3339()],
         )?;
+        self.conn.execute(
+            "DELETE FROM session_compactions WHERE timestamp < ?1",
+            params![cutoff.to_rfc3339()],
+        )?;
         Ok(())
     }
 
@@ -591,6 +595,7 @@ impl Tracker {
                 "BEGIN;
                  DELETE FROM commands;
                  DELETE FROM parse_failures;
+                 DELETE FROM session_compactions;
                  COMMIT;",
             )
             .context("Failed to reset tracking database")?;
