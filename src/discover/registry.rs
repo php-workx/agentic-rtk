@@ -540,23 +540,15 @@ fn rewrite_compound(
                 }
             }
             TokenKind::Pipe => {
+                // Never rewrite the left-hand side of a pipe (#1560). RTK
+                // filters reformat output (compress, group, drop columns) and
+                // can silently break downstream consumers like grep, awk, jq,
+                // wc — see the `ps aux | grep python | grep -v grep` repro,
+                // and the older find/fd carve-outs that motivated #439. The
+                // safest behavior across the whole filter set is to leave
+                // every pipe group raw end-to-end.
                 let seg = cmd[seg_start..tok.offset].trim();
-                let is_pipe_incompatible = seg.starts_with("find ")
-                    || seg == "find"
-                    || seg.starts_with("fd ")
-                    || seg == "fd";
-                let rewritten = if is_pipe_incompatible {
-                    seg.to_string()
-                } else if is_cat_segment(seg) {
-                    rewrite_cat_plain_read(seg, excluded).unwrap_or_else(|| seg.to_string())
-                } else {
-                    rewrite_segment(seg, excluded, curl_bypass)
-                        .unwrap_or_else(|| seg.to_string())
-                };
-                if rewritten != seg {
-                    any_changed = true;
-                }
-                result.push_str(&rewritten);
+                result.push_str(seg);
 
                 let pipe_group_end = tokens.iter().find(|t| {
                     t.offset > tok.offset
@@ -1716,18 +1708,23 @@ mod tests {
     }
 
     #[test]
-    fn test_rewrite_pipe_first_only() {
-        // After a pipe, the filter command stays raw
+    fn test_rewrite_pipe_left_side_stays_raw() {
+        // RTK filters reformat output and can silently break downstream pipe
+        // consumers like grep, awk, jq (#1560: `rtk ps aux | grep python`
+        // returns nothing because rtk reformats `ps`). Leaving the entire pipe
+        // group raw is the safe default across the whole filter set.
+        assert_eq!(rewrite_command("git log -10 | grep feat", &[]), None);
         assert_eq!(
-            rewrite_command("git log -10 | grep feat", &[]),
-            Some("rtk git log -10 | grep feat".into())
+            rewrite_command("ps aux | grep python | grep -v grep", &[]),
+            None
         );
+        assert_eq!(rewrite_command("ls -la | head", &[]), None);
     }
 
     #[test]
     fn test_rewrite_find_pipe_skipped() {
-        // find in a pipe should NOT be rewritten — rtk find output format
-        // is incompatible with pipe consumers like xargs (#439)
+        // find in a pipe stays raw — same reasoning as #1560 above; this case
+        // (#439) was the original carve-out that motivated the rule.
         assert_eq!(
             rewrite_command("find . -name '*.rs' | xargs grep 'fn run'", &[]),
             None
@@ -1737,6 +1734,16 @@ mod tests {
     #[test]
     fn test_rewrite_find_pipe_xargs_wc() {
         assert_eq!(rewrite_command("find src -type f | wc -l", &[]), None);
+    }
+
+    #[test]
+    fn test_rewrite_pipe_in_compound_keeps_pipe_group_raw_only() {
+        // `cmd1 && piped_group && cmd2` rewrites the non-piped segments but
+        // leaves the entire pipe group end-to-end raw.
+        assert_eq!(
+            rewrite_command("git status && ps aux | grep python && cargo test", &[]),
+            Some("rtk git status && ps aux | grep python && rtk cargo test".into()),
+        );
     }
 
     #[test]
@@ -1895,10 +1902,9 @@ mod tests {
 
     #[test]
     fn test_rewrite_redirect_2_gt_amp_1_with_pipe() {
-        assert_eq!(
-            rewrite_command("cargo test 2>&1 | head", &[]),
-            Some("rtk cargo test 2>&1 | head".into())
-        );
+        // #1560: pipe LHS stays raw (rtk filters reformat output and break
+        // downstream consumers like grep/head/awk).
+        assert_eq!(rewrite_command("cargo test 2>&1 | head", &[]), None);
     }
 
     #[test]
@@ -3281,19 +3287,14 @@ mod tests {
 
     #[test]
     fn test_rewrite_compound_pipe_raw_filter() {
-        // Pipe: rewrite first segment only, pass through rest unchanged
-        assert_eq!(
-            rewrite_command("cargo test | grep FAILED", &[]),
-            Some("rtk cargo test | grep FAILED".into())
-        );
+        // #1560: pipe groups stay raw end-to-end.
+        assert_eq!(rewrite_command("cargo test | grep FAILED", &[]), None);
     }
 
     #[test]
     fn test_rewrite_compound_pipe_git_grep() {
-        assert_eq!(
-            rewrite_command("git log -10 | grep feat", &[]),
-            Some("rtk git log -10 | grep feat".into())
-        );
+        // #1560: pipe groups stay raw end-to-end.
+        assert_eq!(rewrite_command("git log -10 | grep feat", &[]), None);
     }
 
     #[test]
@@ -4043,11 +4044,14 @@ mod tests {
 
     // --- Pipe + operator rewrite ---
 
+    // #1560: pipe groups stay raw end-to-end. Non-piped segments around a
+    // pipe group are still rewritten when the operator separates them.
+
     #[test]
     fn test_rewrite_pipe_then_and() {
         assert_eq!(
             rewrite_command("git log | head -5 && git stash", &[]),
-            Some("rtk git log | head -5 && rtk git stash".into())
+            Some("git log | head -5 && rtk git stash".into())
         );
     }
 
@@ -4055,7 +4059,7 @@ mod tests {
     fn test_rewrite_pipe_then_semicolon() {
         assert_eq!(
             rewrite_command("cargo test | head; git status", &[]),
-            Some("rtk cargo test | head; rtk git status".into())
+            Some("cargo test | head; rtk git status".into())
         );
     }
 
@@ -4063,7 +4067,7 @@ mod tests {
     fn test_rewrite_pipe_then_or() {
         assert_eq!(
             rewrite_command("cargo test | grep FAIL || git stash", &[]),
-            Some("rtk cargo test | grep FAIL || rtk git stash".into())
+            Some("cargo test | grep FAIL || rtk git stash".into())
         );
     }
 
@@ -4074,7 +4078,7 @@ mod tests {
                 "RUST_BACKTRACE=1 cargo test 2>&1 | grep FAILED && git stash",
                 &[]
             ),
-            Some("RUST_BACKTRACE=1 rtk cargo test 2>&1 | grep FAILED && rtk git stash".into())
+            Some("RUST_BACKTRACE=1 cargo test 2>&1 | grep FAILED && rtk git stash".into())
         );
     }
 
@@ -4082,7 +4086,7 @@ mod tests {
     fn test_rewrite_and_then_pipe() {
         assert_eq!(
             rewrite_command("git status && cargo test | grep FAIL", &[]),
-            Some("rtk git status && rtk cargo test | grep FAIL".into())
+            Some("rtk git status && cargo test | grep FAIL".into())
         );
     }
 
@@ -4090,7 +4094,7 @@ mod tests {
     fn test_rewrite_multi_pipe_then_and() {
         assert_eq!(
             rewrite_command("git log | head | tail && git status", &[]),
-            Some("rtk git log | head | tail && rtk git status".into())
+            Some("git log | head | tail && rtk git status".into())
         );
     }
 }
