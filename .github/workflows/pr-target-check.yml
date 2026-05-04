@@ -7,9 +7,9 @@ on:
 jobs:
   check-target:
     runs-on: ubuntu-latest
-    # Skip develop→master PRs (maintainer releases)
+    # Skip develop→main PRs (maintainer releases)
     if: >-
-      github.event.pull_request.base.ref == 'master' &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.ref != 'develop'
     steps:
       - name: Add wrong-base label
@@ -27,13 +27,13 @@ jobs:
             });
 
             // Post comment
-            const body = `👋 Thanks for the PR! It looks like this targets \`master\`, but all PRs should target the **\`develop\`** branch.
+            const body = `👋 Thanks for the PR! It looks like this targets \`main\`, but all PRs should target the **\`develop\`** branch.
 
             Please update the base branch:
             1. Click **Edit** at the top right of this PR
-            2. Change the base branch from \`master\` to \`develop\`
+            2. Change the base branch from \`main\` to \`develop\`
 
-            See [CONTRIBUTING.md](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/master/CONTRIBUTING.md) for details.`;
+            See [CONTRIBUTING.md](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/main/CONTRIBUTING.md) for details.`;
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,

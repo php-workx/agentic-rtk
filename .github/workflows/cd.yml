@@ -3,11 +3,12 @@ name: CD
 on:
   workflow_dispatch:
   push:
-    branches: [develop, master]
+    branches: [develop, main]
+    tags: ['v*']
 
 concurrency:
   group: cd-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: write
@@ -15,13 +16,49 @@ permissions:
 
 jobs:
   # ═══════════════════════════════════════════════
+  # TAG PATH: Release on tag push
+  # ═══════════════════════════════════════════════
+
+  tag-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Verify tag matches a release
+        run: |
+          TAG="${{ github.ref_name }}"
+          echo "Tag pushed: $TAG"
+          # Validate tag format: vN.N.N or vN.N.N-workx.N
+          if ! echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-workx\.[0-9]+)?$'; then
+            echo "::error::Tag $TAG does not match expected format vX.Y.Z or vX.Y.Z-workx.N"
+            exit 1
+          fi
+
+  build-tag-release:
+    name: Build release from tag
+    needs: tag-release
+    if: needs.tag-release.outputs.tag != ''
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.tag-release.outputs.tag }}
+    permissions:
+      contents: write
+    secrets: inherit
+
+  # ═══════════════════════════════════════════════
   # DEVELOP PATH: Pre-release
   # ═══════════════════════════════════════════════
 
   pre-release:
     if: >-
       github.ref == 'refs/heads/develop'
-      || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/master')
+      || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main')
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
@@ -94,11 +131,11 @@ jobs:
     secrets: inherit
 
   # ═══════════════════════════════════════════════
-  # MASTER PATH: Full release
+  # MAIN PATH: Full release via release-please
   # ═══════════════════════════════════════════════
 
   release-please:
-    if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
