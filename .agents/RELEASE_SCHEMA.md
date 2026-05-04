@@ -19,7 +19,7 @@ v{upstream_version}-workx.{counter}
 
 ### Examples
 
-- `v0.38.0-workx.1` — First release on upstream 0.38.0
+- `v0.38.0-workx.2` — First `workx` release on upstream 0.38.0 (counter starts at 2 because `v0.38.0-fork.1` was already shipped)
 - `v0.38.0-workx.2` — Second release on upstream 0.38.0 (no upstream bump)
 - `v0.39.0-workx.1` — First release after upstream bumped to 0.39.0 (counter resets)
 - `v0.39.1-workx.2` — Second release on upstream 0.39.1

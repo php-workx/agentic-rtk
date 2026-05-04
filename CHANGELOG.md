@@ -5,6 +5,40 @@ All notable changes to rtk (Rust Token Killer) will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.38.0-workx.2](https://github.com/php-workx/agentic-rtk/releases/tag/v0.38.0-workx.2) (2026-05-04)
+
+### Features
+
+* **context-zip:** Add postprocessing compressors — stacktrace deduplication, package-install log collapsing, build-group compiler error grouping, and web-extract HTML chrome stripping ([9c82ae9](https://github.com/php-workx/agentic-rtk/commit/9c82ae9))
+* **session-compaction:** Compact Claude/Codex session transcripts with Read-dedup and BashHistory recompression ([9c82ae9](https://github.com/php-workx/agentic-rtk/commit/9c82ae9))
+* **web-extract:** Extract readable text from HTML pages dropping navigation and page chrome ([9c82ae9](https://github.com/php-workx/agentic-rtk/commit/9c82ae9))
+* **upstream-triage:** Add automated upstream PR analyzer (`scripts/analyze-upstream-prs.py`) and weekly GitHub Action to track `rtk-ai/rtk` PRs for adoption into the fork ([9c82ae9](https://github.com/php-workx/agentic-rtk/commit/9c82ae9))
+* **homebrew:** Publish formula to `php-workx/homebrew-tap` with auto-updating checksums ([9c82ae9](https://github.com/php-workx/agentic-rtk/commit/9c82ae9))
+* **install-script:** One-line installer at `https://raw.githubusercontent.com/php-workx/agentic-rtk/main/install.sh` with platform auto-detection ([9c82ae9](https://github.com/php-workx/agentic-rtk/commit/9c82ae9))
+
+### Bug Fixes
+
+* **web-extract:** Preserve fenced code-block indentation in `clean_whitespace` ([3184a3e](https://github.com/php-workx/agentic-rtk/commit/3184a3e))
+* **web-extract:** Collect table cells (`th`/`td`) in DOM order instead of grouping all `th` before `td` ([3184a3e](https://github.com/php-workx/agentic-rtk/commit/3184a3e))
+* **hooks/init:** `uninstall_codex_at` now also removes the Codex session-compaction hook from `hooks.json` ([3184a3e](https://github.com/php-workx/agentic-rtk/commit/3184a3e))
+* **hooks/init:** Enforce `--global` requirement when `--session-compaction` is used with `--codex` ([3184a3e](https://github.com/php-workx/agentic-rtk/commit/3184a3e))
+* **tracking:** Call `cleanup_old()` after `record_session_compaction` to enforce retention policy ([3184a3e](https://github.com/php-workx/agentic-rtk/commit/3184a3e))
+* **tracking:** Canonicalize project path in `project_filter_params` so filtering matches stored rows ([3184a3e](https://github.com/php-workx/agentic-rtk/commit/3184a3e))
+* **discover/registry:** Include `env_prefix` in `head`/`tail` rewrite so `FOO=1 head -20 file` becomes `FOO=1 rtk read file --max-lines 20` ([3184a3e](https://github.com/php-workx/agentic-rtk/commit/3184a3e))
+* **discover/registry:** Add `py`, `kt`, `swift`, `sh`, `json`, `yaml`, `yml` to whitespace-safe source-file extensions ([3184a3e](https://github.com/php-workx/agentic-rtk/commit/3184a3e))
+* **discover/registry:** Extract shared `parse_cat_command` helper to deduplicate validation between `rewrite_cat_plain_read` and `rewrite_cat_read` ([3184a3e](https://github.com/php-workx/agentic-rtk/commit/3184a3e))
+
+### CI/CD
+
+* **workflows:** Adopt `main` as default branch (renamed from `master`) across all GitHub Actions ([4d3fb63](https://github.com/php-workx/agentic-rtk/commit/4d3fb63))
+* **workflows:** Add tag-push trigger (`v*`) to `cd.yml` for direct release builds ([4d3fb63](https://github.com/php-workx/agentic-rtk/commit/4d3fb63))
+* **workflows:** Validate tag format `vX.Y.Z` or `vX.Y.Z-workx.N` before building ([4d3fb63](https://github.com/php-workx/agentic-rtk/commit/4d3fb63))
+
+### Documentation
+
+* **release-schema:** Document dual-versioning system in `.agents/RELEASE_SCHEMA.md` and `.releaserc.yml` ([074e0c2](https://github.com/php-workx/agentic-rtk/commit/074e0c2))
+
+
 ## [0.38.0](https://github.com/rtk-ai/rtk/compare/v0.37.2...v0.38.0) (2026-04-29)
 
 
