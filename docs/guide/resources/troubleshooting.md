@@ -130,7 +130,7 @@ Error: program not found
 
 **Fix:** Update to RTK v0.23.1+:
 ```bash
-cargo install --git https://github.com/rtk-ai/rtk
+cargo install --git https://github.com/php-workx/agentic-rtk
 rtk --version    # should be 0.23.1+
 ```
 
@@ -161,7 +161,7 @@ If Rust Type Kit is published to crates.io under the name `rtk`, `cargo install 
 Always use the explicit URL:
 
 ```bash
-cargo install --git https://github.com/rtk-ai/rtk
+cargo install --git https://github.com/php-workx/agentic-rtk
 ```
 
 ## Run the diagnostic script
@@ -181,4 +181,4 @@ Checks:
 
 ## Still stuck?
 
-Open an issue: https://github.com/rtk-ai/rtk/issues
+Open an issue: https://github.com/php-workx/agentic-rtk/issues
