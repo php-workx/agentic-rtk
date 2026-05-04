@@ -1,0 +1,34 @@
+# Release configuration for php-workx/agentic-rtk
+# See .agents/RELEASE_SCHEMA.md for full documentation on our dual-versioning system.
+
+# Version file tracks upstream RTK — do NOT bump this for fork-only releases.
+version:
+  file: Cargo.toml
+  path: package.version
+
+# Changelog files
+changelog:
+  files:
+    - path: CHANGELOG.md
+      lang: en
+
+# Commit message format
+commit:
+  message: "chore: release v{version}"
+
+# Tag format
+# This fork uses a dual-versioning scheme:
+#   v{upstream_version}-workx.{counter}
+# where upstream_version comes from Cargo.toml and counter increments per fork release.
+# Counter resets to 1 whenever Cargo.toml version changes (upstream sync).
+tag:
+  prefix: v
+  # Suffix is NOT handled by this tool — agents must read .agents/RELEASE_SCHEMA.md
+  # and construct tags manually as v{CARGO_VERSION}-workx.{COUNTER}.
+  sign: false
+
+# Additional files to include in release commit
+include:
+  - CHANGELOG.md
+  - Cargo.toml
+  - Cargo.lock
