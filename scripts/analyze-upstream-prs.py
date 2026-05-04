@@ -91,6 +91,19 @@ def main() -> int:
         "|----|-------|--------|-------|----------|---------------|--------|-------|",
     ]
 
+    # Load existing statuses from current report so manual triage isn't overwritten
+    existing_statuses = {}
+    if os.path.exists(REPORT_FILE):
+        with open(REPORT_FILE, "r") as f:
+            for line in f:
+                if line.startswith("| #"):
+                    parts = [p.strip() for p in line.split("|")]
+                    if len(parts) >= 8:
+                        pr_num_str = parts[1].lstrip("#")
+                        pr_status = parts[7]
+                        if pr_status in {"approved", "rejected", "partial", "deferred", "merged", "pending"}:
+                            existing_statuses[pr_num_str] = pr_status
+
     for pr in prs:
         num = pr["number"]
         title = pr["title"]
@@ -102,8 +115,16 @@ def main() -> int:
         risk = conflict_risk(files, title, body)
         adopted = already_in_fork(num)
 
-        status = "merged" if adopted else "pending"
-        notes = "Already in fork" if adopted else ""
+        num_str = str(num)
+        if adopted:
+            status = "merged"
+            notes = "Already in fork"
+        elif num_str in existing_statuses and existing_statuses[num_str] != "pending":
+            status = existing_statuses[num_str]
+            notes = ""
+        else:
+            status = "pending"
+            notes = ""
 
         # First line of body as extra context
         body_summary = ""

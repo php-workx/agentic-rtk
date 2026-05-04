@@ -21,7 +21,7 @@ The upstream maintainers are slow to merge. We stay ahead by continuously evalua
 
 ## Decision Workflow
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
 │  STEP 1: Read the current report                                    │
 │  .agents/upstream-prs.md                                            │
