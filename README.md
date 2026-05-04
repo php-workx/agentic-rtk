@@ -73,6 +73,15 @@ When a compressor delivers savings, RTK tags the command in the local SQLite dat
 > `pkg-install`: 1,240 commands, 890K tokens saved, 72% avg  
 > `stacktrace`: 312 commands, 410K tokens saved, 68% avg
 
+### New in this fork
+
+| Feature | What changed |
+|---------|-------------|
+| **xcodebuild rewrite** | `rtk xcodebuild` is now recognized and rewritten into compact output |
+| **Unicode-safe JSON truncation** | `rtk json` no longer splits multi-byte characters mid-glyph |
+| **curl URL allowlist** | Configure allowed domains in `rtk.toml` to bypass schema-mode rewrite |
+| **`--json` flag for jest & playwright** | Machine-readable JSON envelopes for orchestrators and CI parsers |
+
 ## Token Savings (30-min Claude Code Session)
 
 | Operation | Frequency | Standard | rtk | Savings |
@@ -234,6 +243,7 @@ rtk cargo clippy                # Cargo clippy (-80%)
 rtk ruff check                  # Python linting (JSON, -80%)
 rtk golangci-lint run           # Go linting (JSON, -85%)
 rtk rubocop                     # Ruby linting (JSON, -60%+)
+rtk xcodebuild                  # iOS/macOS build output compact
 ```
 
 ### Package Managers
@@ -270,11 +280,11 @@ rtk kubectl services            # Compact service list
 
 ### Data & Analytics
 ```bash
-rtk json config.json            # Structure without values
+rtk json config.json            # Structure without values (Unicode-aware truncation)
 rtk deps                        # Dependencies summary
 rtk env -f AWS                  # Filtered env vars
 rtk log app.log                 # Deduplicated logs
-rtk curl <url>                  # Truncate + save full output
+rtk curl <url>                  # Truncate + save full output (respects URL allowlist)
 rtk wget <url>                  # Download, strip progress bars
 rtk web <url>                   # Extract readable web page text
 rtk summary <long command>      # Heuristic summary
