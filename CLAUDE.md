@@ -8,6 +8,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a fork with critical fixes for git argument parsing and modern JavaScript stack support (pnpm, vitest, Next.js, TypeScript, Playwright, Prisma).
 
+## Fork Development Guidelines
+
+This repository is **a fork of rtk-ai/rtk**. All changes must consider future upstream merges.
+
+### Before modifying any code, read:
+- `.agents/UPSTREAM_SYNC_STRATEGY.md` — How to add features without breaking upstream sync
+- `.agents/RELEASE_SCHEMA.md` — Our dual-versioning release system (`v{upstream}-workx.{counter}`)
+- `.agents/UPSTREAM_TRIAGE.md` — How to evaluate upstream PRs for adoption
+
+### Quick rules:
+1. **Prefer new files** over editing upstream-owned files
+2. **Use `// FORK:` markers** on every change to a shared file
+3. **Never rewrite upstream functions** — extend, wrap, or add new ones
+4. **Check the ownership map** in `UPSTREAM_SYNC_STRATEGY.md` before touching `src/core/*`, `src/hooks/*`, `src/discover/*`, or `src/main.rs`
+
+### Release process:
+1. Tag format: `v{upstream_version}-workx.{counter}` (e.g., `v0.38.0-workx.2`)
+2. Base version tracks upstream `Cargo.toml` — **do not bump it** for fork-only releases
+3. Counter increments per fork release; resets on upstream version bumps
+4. Pushing a `v*` tag triggers the full CD pipeline (build → release → Homebrew)
+
+
+
 ### Name Collision Warning
 
 **Two different "rtk" projects exist:**
