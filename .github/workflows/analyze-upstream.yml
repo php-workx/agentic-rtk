@@ -1,0 +1,53 @@
+name: Analyze Upstream PRs
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"   # Every Monday at 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gh CLI
+        uses: sersoft-gmbh/setup-gh-cli-action@v1
+        with:
+          version: stable
+
+      - name: Authenticate gh
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      - name: Generate upstream PR report
+        run: |
+          python3 scripts/analyze-upstream-prs.py
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit report if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .agents/upstream-prs.md
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: refresh upstream PR triage report [$(date -u +%Y-%m-%d)]"
+            git push
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create or update tracking issue
+        run: |
+          python3 scripts/create-upstream-issue.py
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
