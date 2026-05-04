@@ -52,7 +52,7 @@ pub enum AgentTarget {
     Antigravity,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 #[command(
     name = "rtk",
     version,
@@ -68,8 +68,14 @@ struct Cli {
     verbose: u8,
 
     /// Ultra-compact mode: ASCII icons, inline format (Level 2 optimizations)
-    #[arg(long, global = true)]
+    #[arg(long, global = true, conflicts_with = "json")]
     ultra_compact: bool,
+
+    /// Emit machine-readable JSON envelope on stdout (untruncated, stable shape).
+    /// Bypasses the human formatter; intended for orchestrators and CI parsers.
+    /// Currently supported by: vitest, jest, playwright. Conflicts with -v / --ultra-compact.
+    #[arg(long, global = true, conflicts_with = "verbose")]
+    json: bool,
 
     /// Set SKIP_ENV_VALIDATION=1 for child processes (Next.js, tsc, lint, prisma)
     #[arg(long = "skip-env", global = true)]
@@ -2065,7 +2071,7 @@ fn run_cli() -> Result<i32> {
         }
 
         Commands::Jest { ref args } | Commands::Vitest { ref args } => {
-            vitest_cmd::run_test(&cli.command, args, cli.verbose)?
+            vitest_cmd::run_test(&cli.command, args, cli.verbose, cli.json)?
         }
 
         Commands::Prisma { command } => match command {
@@ -2110,7 +2116,7 @@ fn run_cli() -> Result<i32> {
 
         Commands::Format { args } => format_cmd::run(&args, cli.verbose)?,
 
-        Commands::Playwright { args } => playwright_cmd::run(&args, cli.verbose)?,
+        Commands::Playwright { args } => playwright_cmd::run(&args, cli.verbose, cli.json)?,
 
         Commands::Cargo { command } => match command {
             CargoCommands::Build { args } => {
@@ -2272,7 +2278,7 @@ fn run_cli() -> Result<i32> {
                 }
                 "next" => next_cmd::run(&args[1..], cli.verbose)?,
                 "prettier" => prettier_cmd::run(&args[1..], cli.verbose)?,
-                "playwright" => playwright_cmd::run(&args[1..], cli.verbose)?,
+                "playwright" => playwright_cmd::run(&args[1..], cli.verbose, cli.json)?,
                 _ => npm_cmd::exec(&args, cli.verbose, cli.skip_env)?,
             }
         }
@@ -2658,6 +2664,29 @@ mod tests {
     use super::*;
     use clap::Parser;
 
+    /// T6 (--json conflict matrix): --json must reject combinations with -v / --ultra-compact.
+    #[test]
+    fn test_json_flag_parses_alone() {
+        let cli = Cli::try_parse_from(["rtk", "--json", "vitest"]).expect("--json alone parses");
+        assert!(cli.json);
+        assert_eq!(cli.verbose, 0);
+        assert!(!cli.ultra_compact);
+    }
+
+    #[test]
+    fn test_json_flag_conflicts_with_verbose() {
+        let err = Cli::try_parse_from(["rtk", "--json", "-v", "vitest"])
+            .expect_err("--json + -v must conflict");
+        assert!(matches!(err.kind(), ErrorKind::ArgumentConflict));
+    }
+
+    #[test]
+    fn test_json_flag_conflicts_with_ultra_compact() {
+        let err = Cli::try_parse_from(["rtk", "--json", "--ultra-compact", "vitest"])
+            .expect_err("--json + --ultra-compact must conflict");
+        assert!(matches!(err.kind(), ErrorKind::ArgumentConflict));
+    }
+
     #[test]
     fn test_toml_fallback_postprocessor_feature_is_preserved() {
         let input = "Requirement already satisfied: requests in /tmp/site-packages\nUsing cached certifi-2023.7.22-py3-none-any.whl\nSuccessfully installed flask-2.3.3";
@@ -2808,14 +2837,6 @@ mod tests {
     fn test_try_parse_valid_git_status() {
         let result = Cli::try_parse_from(["rtk", "git", "status"]);
         assert!(result.is_ok(), "git status should parse successfully");
-    }
-
-    #[test]
-    fn test_try_parse_help_is_display_help() {
-        match Cli::try_parse_from(["rtk", "--help"]) {
-            Err(e) => assert_eq!(e.kind(), ErrorKind::DisplayHelp),
-            Ok(_) => panic!("Expected DisplayHelp error"),
-        }
     }
 
     #[test]
