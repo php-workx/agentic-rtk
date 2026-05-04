@@ -48,7 +48,7 @@ lint:
   cargo clippy --all-targets -- -D warnings
 
 # Check new/modified command modules have tests.
-test-presence base='origin/develop':
+test-presence base='origin/main':
   bash scripts/check-test-presence.sh {{base}}
 
 # Scan Cargo dependencies for advisories.

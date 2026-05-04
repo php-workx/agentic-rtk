@@ -13,7 +13,11 @@ pub fn run(url: &str, verbose: u8) -> Result<i32> {
         eprintln!("Fetching: {}", url);
     }
 
-    let response = match ureq::get(url).set("User-Agent", "rtk").call() {
+    let response = match ureq::get(url)
+        .set("User-Agent", "rtk")
+        .timeout(std::time::Duration::from_secs(30))
+        .call()
+    {
         Ok(response) => response,
         Err(ureq::Error::Status(_, response)) => response,
         Err(err) => return Err(err).with_context(|| format!("Failed to fetch {}", url)),
@@ -22,9 +26,9 @@ pub fn run(url: &str, verbose: u8) -> Result<i32> {
     let status = response.status();
     let status_text = response.status_text().to_string();
     let content_type = response.header("content-type").unwrap_or("").to_string();
+    const MAX_BODY_BYTES: u64 = 10_000_000; // 10 MiB
     let mut body = Vec::new();
-    response
-        .into_reader()
+    std::io::Read::take(response.into_reader(), MAX_BODY_BYTES)
         .read_to_end(&mut body)
         .with_context(|| format!("Failed to read response body from {}", url))?;
 

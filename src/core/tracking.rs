@@ -431,6 +431,27 @@ impl Tracker {
             "CREATE INDEX IF NOT EXISTS idx_pf_timestamp ON parse_failures(timestamp)",
             [],
         )?;
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS session_compactions (
+                id INTEGER PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                transcript_path TEXT NOT NULL,
+                backup_path TEXT NOT NULL,
+                bytes_in INTEGER NOT NULL,
+                bytes_out INTEGER NOT NULL,
+                percent_saved REAL NOT NULL,
+                read_dedup_hits INTEGER NOT NULL,
+                bash_compact_hits INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                status TEXT NOT NULL
+            )",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_compactions_timestamp ON session_compactions(timestamp)",
+            [],
+        )?;
         Ok(())
     }
 

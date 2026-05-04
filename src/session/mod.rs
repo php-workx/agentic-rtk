@@ -1412,7 +1412,7 @@ fn discover_claude_session_files() -> Result<Vec<PathBuf>> {
     for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
         if entry.file_type().is_file()
             && entry.path().extension().and_then(|e| e.to_str()) == Some("jsonl")
-            && !entry.path().to_string_lossy().contains("/subagents/")
+            && !entry.path().components().any(|c| c.as_os_str() == "subagents")
         {
             files.push(entry.path().to_path_buf());
         }

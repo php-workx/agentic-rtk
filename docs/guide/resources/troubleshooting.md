@@ -15,12 +15,12 @@ $ rtk gain
 rtk: 'gain' is not a rtk command. See 'rtk --help'.
 ```
 
-**Cause:** You installed **Rust Type Kit** (`reachingforthejack/rtk`) instead of **Rust Token Killer** (`rtk-ai/rtk`). They share the same binary name.
+**Cause:** You installed **Rust Type Kit** (`php-workx/agentic-rtk`) instead of **Rust Token Killer** (`php-workx/agentic-rtk`). They share the same binary name.
 
 **Fix:**
 ```bash
 cargo uninstall rtk
-curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/php-workx/agentic-rtk/master/install.sh | sh
 rtk gain    # should now show token savings stats
 ```
 
@@ -112,7 +112,7 @@ rtk --version
 **Fix:** Use [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) for full hook support:
 ```bash
 # Inside WSL
-curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/php-workx/agentic-rtk/refs/heads/master/install.sh | sh
 rtk init -g    # full hook mode works in WSL
 ```
 

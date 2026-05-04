@@ -495,27 +495,23 @@ fn remove_hook_from_json(root: &mut serde_json::Value) -> bool {
         }
     };
 
-    let pre_tool_use_array = match hooks.as_array_mut() {
-        Some(arr) => arr,
-        None => return false,
-    };
-
-    let original_len = pre_tool_use_array.len();
-    pre_tool_use_array.retain(|entry| {
-        if let Some(hooks_array) = entry.get("hooks").and_then(|h| h.as_array()) {
-            for hook in hooks_array {
-                if let Some(command) = hook.get("command").and_then(|c| c.as_str()) {
-                    // Match both legacy script path and new binary command
-                    if command.contains(REWRITE_HOOK_FILE) || command == CLAUDE_HOOK_COMMAND {
-                        return false;
+    if let Some(pre_tool_use_array) = hooks.as_array_mut() {
+        let original_len = pre_tool_use_array.len();
+        pre_tool_use_array.retain(|entry| {
+            if let Some(hooks_array) = entry.get("hooks").and_then(|h| h.as_array()) {
+                for hook in hooks_array {
+                    if let Some(command) = hook.get("command").and_then(|c| c.as_str()) {
+                        // Match both legacy script path and new binary command
+                        if command.contains(REWRITE_HOOK_FILE) || command == CLAUDE_HOOK_COMMAND {
+                            return false;
+                        }
                     }
                 }
             }
-        }
-        true
-    });
-
-    removed |= pre_tool_use_array.len() < original_len;
+            true
+        });
+        removed |= pre_tool_use_array.len() < original_len;
+    }
     if let Some(session_end) = root
         .get_mut("hooks")
         .and_then(|h| h.get_mut(SESSION_END_KEY))
