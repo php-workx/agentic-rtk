@@ -610,31 +610,10 @@ pub(crate) fn filter_go_build(output: &str) -> String {
         if has_unrecognized_output {
             return format!("Go build: Failed\n{}", output.trim());
         }
+        return "Go build: Success".to_string();
     }
 
-    if errors.is_empty() {
-        // Pass the unrecognized output through so the user sees what actually
-        // happened rather than a misleading "Success".
-        let mut result = String::new();
-        result.push_str(&format!(
-            "Go build: failed ({} unrecognized line{})\n",
-            unrecognized.len(),
-            if unrecognized.len() == 1 { "" } else { "s" }
-        ));
-        result.push_str("═══════════════════════════════════════\n");
-        for (i, line) in unrecognized.iter().take(20).enumerate() {
-            result.push_str(&format!("{}. {}\n", i + 1, truncate(line, 240)));
-        }
-        if unrecognized.len() > 20 {
-            result.push_str(&format!(
-                "\n... +{} more lines\n",
-                unrecognized.len() - 20
-            ));
-        }
-        return result.trim().to_string();
-    }
-
-    let mut result = String::new();
+    let mut result = String::new();    let mut result = String::new();
     result.push_str(&format!("Go build: {} errors\n", errors.len()));
     result.push_str("═══════════════════════════════════════\n");
 
@@ -951,7 +930,7 @@ main.go:15:2: cannot use x (type int) as type string"#;
             "must not report success when there is unrecognized output, got: {result}"
         );
         assert!(
-            result.contains("failed"),
+            result.to_lowercase().contains("failed"),
             "must surface failure, got: {result}"
         );
         assert!(

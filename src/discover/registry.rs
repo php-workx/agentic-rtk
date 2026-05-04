@@ -1635,9 +1635,10 @@ mod tests {
 
     #[test]
     fn test_rewrite_cat_before_pipe_preserves_plain_read() {
+        // #1639: pipe groups are left raw end-to-end
         assert_eq!(
             rewrite_command("cat src/main.rs | head", &[]),
-            Some("rtk read src/main.rs | head".into())
+            None
         );
     }
 

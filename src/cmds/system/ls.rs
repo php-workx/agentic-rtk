@@ -545,7 +545,7 @@ mod tests {
         let italian_input = "totale 8\n\
                              drwxr-xr-x  2 user user 4096 30 apr 14.54 src\n\
                              -rw-r--r--  1 user user 1234 30 apr 14.54 main.rs\n";
-        let (entries, _summary) = compact_ls(italian_input, false);
+        let (entries, _summary) = compact_ls(italian_input, false, false);
         // Without LC_ALL=C, parser fails on every line -> "(empty)"
         // This is why run() must force C locale.
         assert_eq!(
