@@ -39,14 +39,26 @@ pub fn extract_content(input: &str) -> String {
 fn clean_whitespace(output: &str) -> String {
     let mut result = Vec::new();
     let mut previous_blank = false;
+    let mut in_code_block = false;
 
     for line in output.lines() {
         let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            in_code_block = !in_code_block;
+            result.push(trimmed.to_string());
+            previous_blank = false;
+            continue;
+        }
         if trimmed.is_empty() {
             if !previous_blank {
                 result.push(String::new());
             }
             previous_blank = true;
+            continue;
+        }
+        if in_code_block {
+            result.push(line.trim_end().to_string());
+            previous_blank = false;
         } else {
             result.push(trimmed.to_string());
             previous_blank = false;
@@ -167,13 +179,11 @@ fn is_block_tag(tag: &str) -> bool {
 
 fn extract_table(table: &scraper::ElementRef<'_>, output: &mut String) {
     let row_selector = Selector::parse("tr").expect("valid selector");
-    let header_selector = Selector::parse("th").expect("valid selector");
-    let cell_selector = Selector::parse("td").expect("valid selector");
+    let cell_selector = Selector::parse("th, td").expect("valid selector");
 
     for row in table.select(&row_selector) {
         let cells: Vec<String> = row
-            .select(&header_selector)
-            .chain(row.select(&cell_selector))
+            .select(&cell_selector)
             .map(|cell| cell.text().collect::<Vec<_>>().join("").trim().to_string())
             .filter(|cell| !cell.is_empty())
             .collect();

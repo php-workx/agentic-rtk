@@ -21,7 +21,16 @@ REPORT_FILE = ".agents/upstream-prs.md"
 
 def run(cmd: str) -> str:
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode, cmd, output=result.stdout, stderr=result.stderr
+        )
     return result.stdout.strip()
+
+
+def escape_md_cell(value: str) -> str:
+    return value.replace("|", "\|").replace("
+", " ").replace("", " ")
 
 
 def categorize(title: str) -> str:
@@ -69,10 +78,14 @@ def main() -> int:
     print(f"== Upstream PR Analyzer ==")
     print(f"Upstream: {UPSTREAM}")
 
-    prs_json = run(
-        f'gh pr list --repo {UPSTREAM} --state open --limit 50 '
-        f'--json number,title,author,createdAt,changedFiles,headRefName,body'
-    )
+    try:
+        prs_json = run(
+            f'gh pr list --repo {UPSTREAM} --state open --limit 50 '
+            f'--json number,title,author,createdAt,changedFiles,headRefName,body'
+        )
+    except subprocess.CalledProcessError as e:
+        print(f"Error fetching PRs: {e.stderr or e.output or str(e)}", file=sys.stderr)
+        return 1
     if not prs_json:
         print("No PR data returned")
         return 0
@@ -137,7 +150,7 @@ def main() -> int:
         notes_full = (notes + ", " + body_summary) if notes and body_summary else (notes or body_summary)
 
         lines.append(
-            f"| #{num} | {title_short} | {author} | {files} | {cat} | {risk} | {status} | {notes_full} |"
+            f"| #{num} | {escape_md_cell(title_short)} | {escape_md_cell(author)} | {files} | {cat} | {risk} | {status} | {escape_md_cell(notes_full)} |"
         )
 
     lines.extend([

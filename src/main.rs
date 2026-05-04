@@ -3275,4 +3275,12 @@ mod tests {
             _ => panic!("Expected Commands::Npx for unknown tool"),
         }
     }
+
+    #[test]
+    fn test_is_operational_command_web_variant() {
+        let cmd = Commands::Web {
+            url: "https://example.com".to_string(),
+        };
+        assert!(is_operational_command(&cmd), "Commands::Web should be operational");
+    }
 }

@@ -53,10 +53,17 @@ fn current_project_path_string() -> String {
 /// Uses GLOB instead of LIKE to avoid `_` and `%` in paths acting as wildcards. // changed: GLOB
 fn project_filter_params(project_path: Option<&str>) -> (Option<String>, Option<String>) {
     match project_path {
-        Some(p) => (
-            Some(p.to_string()),
-            Some(format!("{}{}*", p, std::path::MAIN_SEPARATOR)), // changed: GLOB pattern with * wildcard
-        ),
+        Some(p) => {
+            let canonical = std::path::Path::new(p)
+                .canonicalize()
+                .ok()
+                .map(|cp| cp.to_string_lossy().to_string())
+                .unwrap_or_else(|| p.to_string());
+            (
+                Some(canonical.clone()),
+                Some(format!("{}{}*", canonical, std::path::MAIN_SEPARATOR)),
+            )
+        }
         None => (None, None),
     }
 }
@@ -568,7 +575,7 @@ impl Tracker {
                 status,
             ],
         )?;
-        Ok(())
+        self.cleanup_old()
     }
 
     fn cleanup_old(&self) -> Result<()> {

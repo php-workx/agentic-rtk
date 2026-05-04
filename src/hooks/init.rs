@@ -250,6 +250,9 @@ pub fn run(
         if matches!(patch_mode, PatchMode::Skip) {
             anyhow::bail!("--codex cannot be combined with --no-patch");
         }
+        if session_compaction && !global {
+            anyhow::bail!("--session-compaction requires --global");
+        }
         return run_codex_mode(global, session_compaction, verbose);
     }
 
@@ -772,6 +775,56 @@ fn uninstall_codex_at(codex_dir: &Path, verbose: u8) -> Result<Vec<String>> {
         verbose,
     )? {
         removed.push("AGENTS.md: removed @RTK.md reference".to_string());
+    }
+
+    // Remove Codex session-compaction hook from hooks.json
+    let hooks_path = codex_dir.join(HOOKS_JSON);
+    if hooks_path.exists() {
+        let raw = fs::read_to_string(&hooks_path)
+            .with_context(|| format!("Failed to read hooks.json: {}", hooks_path.display()))?;
+        let mut root: serde_json::Value = serde_json::from_str(&raw)
+            .with_context(|| format!("Failed to parse hooks.json: {}", hooks_path.display()))?;
+        let mut modified = false;
+        if let Some(hooks_obj) = root.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+            if let Some(stop_arr) = hooks_obj.get_mut(STOP_KEY).and_then(|s| s.as_array_mut()) {
+                let _before = stop_arr.len();
+                stop_arr.retain_mut(|entry| {
+                    if let Some(nested) = entry.get_mut("hooks").and_then(|h| h.as_array_mut()) {
+                        let nested_before = nested.len();
+                        nested.retain(|hook| {
+                            !hook
+                                .get("command")
+                                .and_then(|c| c.as_str())
+                                .is_some_and(|cmd| cmd == CODEX_SESSION_HOOK_COMMAND)
+                        });
+                        if nested.len() < nested_before {
+                            modified = true;
+                        }
+                        !nested.is_empty()
+                    } else {
+                        true
+                    }
+                });
+                if stop_arr.is_empty() {
+                    hooks_obj.remove(STOP_KEY);
+                    modified = true;
+                }
+                if hooks_obj.is_empty() {
+                    root.as_object_mut().map(|o| o.remove("hooks"));
+                    modified = true;
+                }
+            }
+        }
+        if modified {
+            let serialized = serde_json::to_string_pretty(&root)
+                .context("Failed to serialize hooks.json after uninstall")?;
+            fs::write(&hooks_path, serialized)
+                .with_context(|| format!("Failed to write hooks.json: {}", hooks_path.display()))?;
+            if verbose > 0 {
+                eprintln!("Removed Codex session-compaction hook from hooks.json");
+            }
+            removed.push("hooks.json: removed Codex session-compaction hook".to_string());
+        }
     }
 
     Ok(removed)

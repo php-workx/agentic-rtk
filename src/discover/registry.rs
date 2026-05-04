@@ -691,6 +691,51 @@ fn rewrite_cat_read(cmd_clean: &str, env_prefix: &str, redirect_suffix: &str) ->
         return None;
     }
 
+    let result = parse_cat_command(cmd_clean)?;
+    if !shell_split(result.files_segment)
+        .iter()
+        .all(|file| is_whitespace_safe_source_file(file))
+    {
+        return None;
+    }
+
+    let command = if result.line_numbers {
+        "rtk read -n -l whitespace"
+    } else {
+        "rtk read -l whitespace"
+    };
+    Some(format_rewrite(
+        env_prefix,
+        command,
+        result.files_segment,
+        redirect_suffix,
+    ))
+}
+
+fn is_whitespace_safe_source_file(file: &str) -> bool {
+    let path = std::path::Path::new(file);
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()),
+        Some("rs" | "js" | "ts" | "tsx" | "go" | "java" | "c" | "cpp" | "rb" | "py" | "kt" | "swift" | "sh" | "json" | "yaml" | "yml")
+    )
+}
+
+fn starts_with_command_word(cmd: &str, word: &str) -> bool {
+    cmd == word || cmd.starts_with(&format!("{word} "))
+}
+
+fn is_cat_segment(seg: &str) -> bool {
+    let stripped = ENV_PREFIX.replace(seg.trim(), "");
+    starts_with_command_word(stripped.trim(), "cat")
+}
+
+#[derive(Debug)]
+struct CatParseResult<'a> {
+    files_segment: &'a str,
+    line_numbers: bool,
+}
+
+fn parse_cat_command(cmd_clean: &str) -> Option<CatParseResult> {
     let parsed = tokenize(cmd_clean);
     let words = shell_split(cmd_clean);
     if words.first().map(String::as_str) != Some("cat") {
@@ -719,44 +764,13 @@ fn rewrite_cat_read(cmd_clean: &str, env_prefix: &str, redirect_suffix: &str) ->
         return None;
     }
 
-    if !files
-        .iter()
-        .all(|file| is_whitespace_safe_source_file(file))
-    {
-        return None;
-    }
-
     let files_segment = parsed
         .get(file_index)
         .map(|token| cmd_clean[token.offset..].trim())?;
-    let command = if line_numbers {
-        "rtk read -n -l whitespace"
-    } else {
-        "rtk read -l whitespace"
-    };
-    Some(format_rewrite(
-        env_prefix,
-        command,
+    Some(CatParseResult {
         files_segment,
-        redirect_suffix,
-    ))
-}
-
-fn is_whitespace_safe_source_file(file: &str) -> bool {
-    let path = std::path::Path::new(file);
-    matches!(
-        path.extension().and_then(|ext| ext.to_str()),
-        Some("rs" | "js" | "ts" | "tsx" | "go" | "java" | "c" | "cpp" | "rb")
-    )
-}
-
-fn starts_with_command_word(cmd: &str, word: &str) -> bool {
-    cmd == word || cmd.starts_with(&format!("{word} "))
-}
-
-fn is_cat_segment(seg: &str) -> bool {
-    let stripped = ENV_PREFIX.replace(seg.trim(), "");
-    starts_with_command_word(stripped.trim(), "cat")
+        line_numbers,
+    })
 }
 
 fn rewrite_cat_plain_read(seg: &str, excluded: &[ExcludePattern]) -> Option<String> {
@@ -777,43 +791,13 @@ fn rewrite_cat_plain_read(seg: &str, excluded: &[ExcludePattern]) -> Option<Stri
         return None;
     }
 
-    let parsed = tokenize(cmd_clean);
-    let words = shell_split(cmd_clean);
-    if words.first().map(String::as_str) != Some("cat") {
-        return None;
-    }
-
-    let mut file_index = 1;
-    let mut line_numbers = false;
-    if words.get(1).map(String::as_str) == Some("-n") {
-        line_numbers = true;
-        file_index = 2;
-    } else if words.get(1).is_some_and(|arg| arg.starts_with('-')) {
-        return None;
-    }
-
-    let files = words.get(file_index..)?;
-    if files.is_empty() || files.iter().any(|file| file == "-") {
-        return None;
-    }
-
-    if parsed
-        .iter()
-        .skip(file_index)
-        .any(|token| token.kind != TokenKind::Arg)
-    {
-        return None;
-    }
-
-    let files_segment = parsed
-        .get(file_index)
-        .map(|token| cmd_clean[token.offset..].trim())?;
-    let command = if line_numbers {
+    let result = parse_cat_command(cmd_clean)?;
+    let command = if result.line_numbers {
         "rtk read -n"
     } else {
         "rtk read"
     };
-    Some(format_rewrite(env_prefix, command, files_segment, ""))
+    Some(format_rewrite(env_prefix, command, result.files_segment, ""))
 }
 
 fn format_rewrite(env_prefix: &str, rtk_cmd: &str, rest: &str, redirect_suffix: &str) -> String {
@@ -926,7 +910,7 @@ fn rewrite_segment_inner(seg: &str, excluded: &[ExcludePattern], depth: usize) -
     }
 
     if cmd_clean.starts_with("head -") || cmd_clean.starts_with("tail ") {
-        return rewrite_line_range(cmd_clean).map(|r| format!("{}{}", r, redirect_suffix));
+        return rewrite_line_range(cmd_clean).map(|r| format!("{}{}{}", env_prefix, r, redirect_suffix));
     }
 
     if starts_with_command_word(cmd_clean, "cat") {
