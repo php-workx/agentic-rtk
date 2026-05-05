@@ -499,27 +499,37 @@ mod tests {
         // `~` shorthand does not survive shell quoting; downstream
         // consumers copy this hint verbatim, so a path under `$HOME`
         // must render absolute, not as `~/...`.
-        let path = PathBuf::from("/home/dev/.local/share/rtk/tee/42_cargo_test.log");
+        let path = if cfg!(windows) {
+            PathBuf::from(r"C:\home\dev\.local\share\rtk\tee\42_cargo_test.log")
+        } else {
+            PathBuf::from("/home/dev/.local/share/rtk/tee/42_cargo_test.log")
+        };
         let hint = format_hint(&path);
-        assert_eq!(
-            hint,
+        let expected = if cfg!(windows) {
+            r"[full output: C:\home\dev\.local\share\rtk\tee\42_cargo_test.log]"
+        } else {
             "[full output: /home/dev/.local/share/rtk/tee/42_cargo_test.log]"
-        );
+        };
+        assert_eq!(hint, expected);
         assert!(!hint.contains('~'));
     }
-
     #[test]
     fn test_format_hint_preserves_spaces_in_path() {
         // Paths can legitimately contain spaces (macOS Application Support);
         // the hint preserves them verbatim inside the [...] enclosure.
-        let path = PathBuf::from("/Users/dev/Library/Application Support/rtk/tee/7_curl.log");
+        let path = if cfg!(windows) {
+            PathBuf::from(r"C:\Users\dev\Library\Application Support\rtk\tee\7_curl.log")
+        } else {
+            PathBuf::from("/Users/dev/Library/Application Support/rtk/tee/7_curl.log")
+        };
         let hint = format_hint(&path);
-        assert_eq!(
-            hint,
+        let expected = if cfg!(windows) {
+            r"[full output: C:\Users\dev\Library\Application Support\rtk\tee\7_curl.log]"
+        } else {
             "[full output: /Users/dev/Library/Application Support/rtk/tee/7_curl.log]"
-        );
+        };
+        assert_eq!(hint, expected);
     }
-
     #[test]
     fn test_tee_config_default() {
         let config = TeeConfig::default();

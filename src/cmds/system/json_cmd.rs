@@ -316,7 +316,8 @@ fn cleanup_old_json_files(json_dir: &std::path::Path) {
 
     let to_remove = entries.len() - 20;
     for entry in entries.iter().take(to_remove) {
-        let _ = std::fs::remove_file(entry.path());
+        // Intentional cleanup of stale JSON hint files (max 20 retained).
+        let _ = std::fs::remove_file(entry.path()); // nosemgrep: filesystem-deletion
     }
 }
 
