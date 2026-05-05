@@ -1545,6 +1545,12 @@ fn run_cli() -> Result<i32> {
         hooks::integrity::runtime_check()?;
     }
 
+    if cli.json && !is_json_supported(&cli.command) {
+        anyhow::bail!(
+            "--json is not supported for this command. Supported: vitest, jest, playwright."
+        );
+    }
+
     let code = match cli.command {
         Commands::Ls { args } => ls::run(&args, cli.verbose)?,
 
@@ -2661,6 +2667,17 @@ fn is_operational_command(cmd: &Commands) -> bool {
             | Commands::GolangciLint { .. }
             | Commands::Gt { .. }
             | Commands::Web { .. }
+    )
+}
+
+/// Returns true for commands that implement JSON envelope output.
+fn is_json_supported(cmd: &Commands) -> bool {
+    matches!(
+        cmd,
+        Commands::Vitest { .. }
+            | Commands::Jest { .. }
+            | Commands::Playwright { .. }
+            | Commands::Npx { .. }
     )
 }
 

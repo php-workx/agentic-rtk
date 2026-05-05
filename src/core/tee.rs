@@ -192,7 +192,14 @@ pub fn tee_raw(raw: &str, command_slug: &str, exit_code: i32) -> Option<PathBuf>
 /// inside double quotes and an unquoted `~/path with spaces` splits
 /// on the space, so paths under `$HOME` are rendered absolute.
 fn format_hint(path: &std::path::Path) -> String {
-    format!("[full output: {}]", path.display())
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    format!("[full output: {}]", abs.display())
 }
 
 /// Convenience: tee + format hint in one call.

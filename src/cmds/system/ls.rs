@@ -552,6 +552,10 @@ mod tests {
             entries, "(empty)\n",
             "parser should fail on localized output (relies on LC_ALL=C in run())"
         );
+        assert!(
+            count_tokens(&entries) < count_tokens(italian_input),
+            "compacted localized output should reduce tokens"
+        );
     }
 
     #[test]
@@ -629,5 +633,10 @@ mod tests {
             "short format must not include octal perms, got: {entries}"
         );
         assert!(entries.contains("Cargo.toml"));
+    }
+
+
+    fn count_tokens(s: &str) -> usize {
+        s.split_whitespace().count()
     }
 }

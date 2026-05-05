@@ -103,6 +103,10 @@ mod tests {
             json.get("raw").is_none(),
             "raw must be omitted on full tier"
         );
+        assert!(
+            count_tokens(&serde_json::to_string(&env).unwrap()) > 0,
+            "full envelope must have tokens"
+        );
     }
 
     #[test]
@@ -118,6 +122,10 @@ mod tests {
         assert_eq!(json["data"], 7);
         assert_eq!(json["warnings"][0], "regex fallback");
         assert!(json.get("raw").is_none());
+        assert!(
+            count_tokens(&serde_json::to_string(&env).unwrap()) > 0,
+            "degraded envelope must have tokens"
+        );
     }
 
     #[test]
@@ -132,6 +140,10 @@ mod tests {
             "warnings must be present (as empty array) on degraded tier"
         );
         assert!(json["warnings"].as_array().unwrap().is_empty());
+        assert!(
+            count_tokens(&serde_json::to_string(&env).unwrap()) > 0,
+            "degraded-empty envelope must have tokens"
+        );
     }
 
     #[test]
@@ -145,6 +157,10 @@ mod tests {
         assert_eq!(json["raw"], "oops");
         assert!(json.get("data").is_none());
         assert!(json.get("warnings").is_none());
+        assert!(
+            count_tokens(&serde_json::to_string(&env).unwrap()) > 0,
+            "passthrough envelope must have tokens"
+        );
     }
 
     #[test]
@@ -152,5 +168,13 @@ mod tests {
         let env = build_json_envelope("vitest", ParseResult::Full(0_i32), -1);
         let json: Value = serde_json::from_str(&serde_json::to_string(&env).unwrap()).unwrap();
         assert_eq!(json["exit"], -1);
+        assert!(
+            count_tokens(&serde_json::to_string(&env).unwrap()) > 0,
+            "exit-code envelope must have tokens"
+        );
+    }
+
+    fn count_tokens(s: &str) -> usize {
+        s.split_whitespace().count()
     }
 }

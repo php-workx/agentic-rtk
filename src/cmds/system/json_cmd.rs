@@ -62,7 +62,7 @@ pub fn run(file: &Path, max_depth: usize, schema_only: bool, verbose: u8) -> Res
     if truncated {
         let value: Value = serde_json::from_str(&content).context("Failed to parse JSON")?;
         if let Some(hint) = write_json_hint(&value, file) {
-            println!("{}", hint);
+            eprintln!("{}", hint);
         }
     }
 
@@ -100,7 +100,7 @@ pub fn run_stdin(max_depth: usize, schema_only: bool, verbose: u8) -> Result<()>
     if truncated {
         let value: Value = serde_json::from_str(&content).context("Failed to parse JSON")?;
         if let Some(hint) = write_json_hint(&value, Path::new("stdin")) {
-            println!("{}", hint);
+            eprintln!("{}", hint);
         }
     }
 

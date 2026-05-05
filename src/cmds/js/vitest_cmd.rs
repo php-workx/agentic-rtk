@@ -436,6 +436,7 @@ Scope: all 6 workspace projects
         assert_eq!(value["data"]["passed"], 13);
         assert!(value.get("warnings").is_none());
         assert!(value.get("raw").is_none());
+        assert!(count_tokens(&serialized) > 0, "envelope must contain tokens");
     }
 
     /// T2 (vitest): JSON path preserves all failures (no take(5) truncation).
@@ -476,6 +477,7 @@ Scope: all 6 workspace projects
         for (i, failure) in data.failures.iter().enumerate() {
             assert_eq!(failure.test_name, format!("test {}", i));
         }
+        assert!(count_tokens(&serialized) > 0, "envelope must contain tokens");
     }
 
     /// T3 (vitest): malformed input yields passthrough envelope with raw field.
@@ -490,6 +492,7 @@ Scope: all 6 workspace projects
         assert_eq!(value["exit"], 2);
         assert!(!value["raw"].as_str().unwrap_or("").is_empty());
         assert!(value.get("data").is_none());
+        assert!(count_tokens(&serialized) > 0, "envelope must contain tokens");
     }
 
     /// T4 (vitest): degraded tier (regex fallback) carries warnings array.
@@ -510,6 +513,7 @@ Scope: all 6 workspace projects
         assert!(value.get("data").is_some());
         let warnings = value["warnings"].as_array().expect("warnings array present");
         assert!(!warnings.is_empty(), "degraded tier must carry warnings");
+        assert!(count_tokens(&serialized) > 0, "envelope must contain tokens");
     }
 
     #[test]
@@ -524,5 +528,10 @@ Scope: all 6 workspace projects
         let data = result.unwrap();
         assert_eq!(data.total, 2);
         assert_eq!(data.passed, 2);
+    }
+
+
+    fn count_tokens(s: &str) -> usize {
+        s.split_whitespace().count()
     }
 }

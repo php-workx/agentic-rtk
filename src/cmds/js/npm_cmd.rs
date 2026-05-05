@@ -131,8 +131,11 @@ fn run_filtered(name: &str, args: &[String], verbose: u8, skip_env: bool) -> Res
     let opts = if is_package_install {
         runner::RunOptions::default()
             .postprocess(&[PostprocessKind::PackageInstall, PostprocessKind::Stacktrace])
+            .early_exit_on_failure()
     } else {
-        runner::RunOptions::default().postprocess(&[PostprocessKind::Stacktrace])
+        runner::RunOptions::default()
+            .postprocess(&[PostprocessKind::Stacktrace])
+            .early_exit_on_failure()
     };
 
     runner::run_filtered(
@@ -282,6 +285,7 @@ npm notice
         let output = "\n\n\n";
         let result = filter_npm_output(output);
         assert_eq!(result, "ok");
+        assert_eq!(count_tokens(&result), 1, "ok is one token");
     }
 
     #[test]
@@ -292,6 +296,10 @@ npm notice
 "#;
         let result = filter_npm_output(output);
         assert_eq!(result, "ok");
+        assert!(
+            count_tokens(&result) < count_tokens(&output),
+            "filter should reduce tokens"
+        );
     }
 
     #[test]
@@ -303,6 +311,11 @@ TEST_PASS
 "#;
         let result = filter_npm_output(output);
         assert_eq!(result, "TEST_PASS");
+        assert_eq!(
+            count_tokens(&result),
+            count_tokens("TEST_PASS"),
+            "substantive output token count should match expected"
+        );
     }
 
     #[test]
@@ -324,5 +337,30 @@ error:
 "#;
         let result = filter_npm_output(output);
         assert_eq!(result, "> user output");
+        assert!(count_tokens(&result) > 0, "leading > output should have tokens");
+    }
+
+    #[test]
+    fn test_filter_npm_output_retains_security_warning() {
+        let output = r#"npm WARN deprecated left-pad@1.3.0: use String.prototype.padStart()
+npm WARN audit High severity vuln found in lodash: GHSA-1234-5678-xxxx
+"#;
+        let result = filter_npm_output(output);
+        assert!(
+            result.contains("GHSA-"),
+            "security warning with GHSA must be retained"
+        );
+        assert!(
+            result.contains("High severity"),
+            "security warning with severity must be retained"
+        );
+        assert!(
+            !result.contains("deprecated"),
+            "plain npm WARN should still be filtered"
+        );
+    }
+
+    fn count_tokens(s: &str) -> usize {
+        s.split_whitespace().count()
     }
 }
