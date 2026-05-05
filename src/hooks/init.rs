@@ -258,8 +258,6 @@ pub fn run(
         return run_codex_mode(global, session_compaction, verbose);
     }
 
-    let session_compaction = session_compaction;
-
     // Validation: Global-only features
     if install_opencode && !global {
         anyhow::bail!("OpenCode plugin is global-only. Use: rtk init -g --opencode");
@@ -564,7 +562,7 @@ fn remove_session_hook_entries(session_end: &mut serde_json::Value) -> bool {
         entry
             .get("hooks")
             .and_then(|h| h.as_array())
-            .map_or(true, |h| !h.is_empty())
+            .is_none_or(|h| !h.is_empty())
     });
 
     removed_any || arr.len() < original_len
@@ -794,10 +792,9 @@ fn uninstall_codex_at(codex_dir: &Path, verbose: u8) -> Result<Vec<String>> {
                     if let Some(nested) = entry.get_mut("hooks").and_then(|h| h.as_array_mut()) {
                         let nested_before = nested.len();
                         nested.retain(|hook| {
-                            !hook
-                                .get("command")
+                            hook.get("command")
                                 .and_then(|c| c.as_str())
-                                .is_some_and(|cmd| cmd == CODEX_SESSION_HOOK_COMMAND)
+                                .is_none_or(|cmd| cmd != CODEX_SESSION_HOOK_COMMAND)
                         });
                         if nested.len() < nested_before {
                             modified = true;

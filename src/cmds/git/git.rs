@@ -1614,6 +1614,7 @@ fn run_stash(
 /// Detect the "git stash push" no-op case where git exits 0 but did not
 /// actually create a stash entry. Covers both an entirely clean tree and
 /// pathspec-restricted invocations whose pathspecs matched nothing.
+#[allow(dead_code)]
 fn stash_push_is_noop(combined: &str) -> bool {
     combined.contains("No local changes to save")
 }

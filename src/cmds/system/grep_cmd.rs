@@ -118,6 +118,7 @@ pub fn run(
     Ok(exit_code)
 }
 
+#[allow(dead_code)]
 fn has_format_flag(extra_args: &[String]) -> bool {
     extra_args.iter().any(|arg| {
         matches!(

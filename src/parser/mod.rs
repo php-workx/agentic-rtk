@@ -12,7 +12,8 @@ pub mod json_envelope;
 pub mod types;
 
 pub use formatter::{FormatMode, TokenFormatter};
-pub use json_envelope::{build_json_envelope, JsonEnvelope, JsonTier};
+#[allow(unused_imports)]
+pub use json_envelope::{build_json_envelope, JsonEnvelope};
 pub use types::*;
 
 /// Parse result with degradation tier

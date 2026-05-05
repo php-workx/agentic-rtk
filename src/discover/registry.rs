@@ -773,6 +773,7 @@ fn starts_with_command_word(cmd: &str, word: &str) -> bool {
     cmd == word || cmd.starts_with(&format!("{word} "))
 }
 
+#[allow(dead_code)]
 fn is_cat_segment(seg: &str) -> bool {
     let stripped = ENV_PREFIX.replace(seg.trim(), "");
     starts_with_command_word(stripped.trim(), "cat")
@@ -784,7 +785,7 @@ struct CatParseResult<'a> {
     line_numbers: bool,
 }
 
-fn parse_cat_command(cmd_clean: &str) -> Option<CatParseResult> {
+fn parse_cat_command(cmd_clean: &str) -> Option<CatParseResult<'_>> {
     let parsed = tokenize(cmd_clean);
     let words = shell_split(cmd_clean);
     if words.first().map(String::as_str) != Some("cat") {
@@ -822,6 +823,7 @@ fn parse_cat_command(cmd_clean: &str) -> Option<CatParseResult> {
     })
 }
 
+#[allow(dead_code)]
 fn rewrite_cat_plain_read(seg: &str, excluded: &[ExcludePattern]) -> Option<String> {
     let (cmd_part, redirect_suffix) = strip_trailing_redirects(seg.trim());
     if !redirect_suffix.is_empty() {
@@ -939,10 +941,8 @@ fn rewrite_segment_inner(
             if rest.is_empty() {
                 return None;
             }
-            return match rewrite_segment_inner(rest, excluded, curl_bypass, depth + 1) {
-                Some(rewritten) => Some(format!("{} {}", prefix, rewritten)),
-                None => None,
-            };
+            return rewrite_segment_inner(rest, excluded, curl_bypass, depth + 1)
+                .map(|rewritten| format!("{} {}", prefix, rewritten));
         }
     }
 
@@ -1034,10 +1034,11 @@ fn rewrite_segment_inner(
     // Skip the rewrite when the URL contains any user-configured marker.
     // Empty list = unchanged historical behavior (every curl gets rewritten).
     // Configure via `[curl] bypass_url_markers` in `~/.config/rtk/config.toml`.
-    if rule.rtk_cmd == "rtk curl" && !curl_bypass.is_empty() {
-        if curl_bypass.iter().any(|marker| cmd_clean.contains(marker)) {
-            return None;
-        }
+    if rule.rtk_cmd == "rtk curl"
+        && !curl_bypass.is_empty()
+        && curl_bypass.iter().any(|marker| cmd_clean.contains(marker))
+    {
+        return None;
     }
 
     // #1627: macOS ls -O / -@ / -e exist specifically to surface metadata

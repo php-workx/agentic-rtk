@@ -613,7 +613,7 @@ pub(crate) fn filter_go_build(output: &str) -> String {
         return "Go build: Success".to_string();
     }
 
-    let mut result = String::new();    let mut result = String::new();
+    let mut result = String::new();
     result.push_str(&format!("Go build: {} errors\n", errors.len()));
     result.push_str("═══════════════════════════════════════\n");
 

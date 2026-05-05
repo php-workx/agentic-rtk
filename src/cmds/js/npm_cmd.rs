@@ -182,7 +182,7 @@ fn filter_npm_output(output: &str) -> String {
 
         if !seen_substantive_output {
             if leading_gt_lines.len() == 1 {
-                result.extend(leading_gt_lines.drain(..));
+                result.append(&mut leading_gt_lines);
             } else {
                 leading_gt_lines.clear();
             }
@@ -297,7 +297,7 @@ npm notice
         let result = filter_npm_output(output);
         assert_eq!(result, "ok");
         assert!(
-            count_tokens(&result) < count_tokens(&output),
+            count_tokens(&result) < count_tokens(output),
             "filter should reduce tokens"
         );
     }

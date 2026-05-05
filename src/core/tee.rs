@@ -599,5 +599,4 @@ directory = "/tmp/rtk-tee"
         );
         assert!(content.contains("bytes truncated from middle"));
     }
-
 }

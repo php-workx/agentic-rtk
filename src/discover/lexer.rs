@@ -310,7 +310,6 @@ pub fn split_on_operators(cmd: &str, stop_at_pipe: bool) -> Vec<&str> {
 
 #[allow(dead_code)]
 // AGENTIC-RTK-FORK: Allow dead_code for fork-only usage. See FORK.md.
-#[allow(dead_code)]
 // END AGENTIC-RTK-FORK
 pub fn strip_quotes(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
