@@ -256,7 +256,7 @@ fn run_generic(subcommand: &str, args: &[String], verbose: u8, full_sub: &str) -
     }
 
     let filtered = match json_cmd::filter_json_schema(&raw, JSON_COMPRESS_DEPTH) {
-        Ok(schema) => {
+        Ok((schema, _truncated)) => {
             println!("{}", schema);
             schema
         }

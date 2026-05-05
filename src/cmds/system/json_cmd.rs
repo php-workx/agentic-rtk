@@ -52,7 +52,7 @@ pub fn run(file: &Path, max_depth: usize, schema_only: bool, verbose: u8) -> Res
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
     let (output, truncated) = if schema_only {
-        filter_json_schema(&content, max_depth).map(|s| (s, false))?
+        filter_json_schema(&content, max_depth)?
     } else {
         filter_json_compact(&content, max_depth)?
     };
@@ -90,7 +90,7 @@ pub fn run_stdin(max_depth: usize, schema_only: bool, verbose: u8) -> Result<()>
         .context("Failed to read from stdin")?;
 
     let (output, truncated) = if schema_only {
-        filter_json_schema(&content, max_depth).map(|s| (s, false))?
+        filter_json_schema(&content, max_depth)?
     } else {
         filter_json_compact(&content, max_depth)?
     };
@@ -179,14 +179,17 @@ fn compact_json(value: &Value, depth: usize, max_depth: usize, truncated: &mut b
 
 /// Parse a JSON string and return its schema representation (types only, no values).
 /// Useful for piping JSON from other commands (e.g., `gh api`, `curl`).
-pub fn filter_json_schema(json_str: &str, max_depth: usize) -> Result<String> {
+pub fn filter_json_schema(json_str: &str, max_depth: usize) -> Result<(String, bool)> {
     let value: Value = serde_json::from_str(json_str).context("Failed to parse JSON")?;
-    Ok(extract_schema(&value, 0, max_depth))
+    let mut truncated = false;
+    let schema = extract_schema(&value, 0, max_depth, &mut truncated);
+    Ok((schema, truncated))
 }
 
 /// Schema extraction - single-line output with char-based truncation.
-fn extract_schema(value: &Value, depth: usize, max_depth: usize) -> String {
+fn extract_schema(value: &Value, depth: usize, max_depth: usize, truncated: &mut bool) -> String {
     if depth > max_depth {
+        *truncated = true;
         return "…".to_string();
     }
 
@@ -217,7 +220,7 @@ fn extract_schema(value: &Value, depth: usize, max_depth: usize) -> String {
             if arr.is_empty() {
                 "[]".to_string()
             } else {
-                let first_schema = extract_schema(&arr[0], depth + 1, max_depth);
+                let first_schema = extract_schema(&arr[0], depth + 1, max_depth, truncated);
                 if arr.len() == 1 {
                     format!("[{}]", first_schema)
                 } else {
@@ -239,7 +242,7 @@ fn extract_schema(value: &Value, depth: usize, max_depth: usize) -> String {
                         break;
                     }
                     let val = &map[*key];
-                    let val_schema = extract_schema(val, depth + 1, max_depth);
+                    let val_schema = extract_schema(val, depth + 1, max_depth, truncated);
                     parts.push(format!(r#""{}":{}"#, key, val_schema));
                 }
                 format!("{{{}}}", parts.join(","))
@@ -410,7 +413,7 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let schema = extract_schema(&json, 0, 5);
+        let schema = extract_schema(&json, 0, 5, &mut false);
         assert!(schema.lines().count() == 1);
         assert!(schema.contains("\"name\":string"));
         assert!(schema.contains("\"count\":int"));
@@ -419,7 +422,7 @@ mod tests {
     #[test]
     fn test_extract_schema_array() {
         let json: Value = serde_json::from_str(r#"{"items": [1, 2, 3]}"#).unwrap();
-        let schema = extract_schema(&json, 0, 5);
+        let schema = extract_schema(&json, 0, 5, &mut false);
         assert!(schema.lines().count() == 1);
         assert!(schema.contains("[int] (3)"));
     }
@@ -429,7 +432,7 @@ mod tests {
         let long_string = "a".repeat(100);
         let json = format!(r#"{{"name": "{}"}}"#, long_string);
         let value: Value = serde_json::from_str(&json).unwrap();
-        let schema = extract_schema(&value, 0, 5);
+        let schema = extract_schema(&value, 0, 5, &mut false);
         assert!(schema.contains("string[100]"));
     }
 
@@ -473,4 +476,12 @@ mod tests {
     fn test_compact_truncates_mixed_ascii_multibyte_string() {
         assert_value_truncated(&("a".repeat(76) + &"日本語".repeat(5)));
     }
+    #[test]
+    fn test_filter_json_schema_depth_truncation() {
+        let json = r#"{"a": {"b": {"c": 1}}}"#;
+        let (output, truncated) = filter_json_schema(json, 1).unwrap();
+        assert!(truncated, "schema-only path should propagate truncation flag");
+        assert!(output.contains('…'), "truncated schema should contain ellipsis");
+    }
+
 }
