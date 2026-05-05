@@ -17,7 +17,6 @@ These are 1-file bugfixes with low merge conflict risk. Cherry-pick individually
 | **#1648** | fix(hooks/claude): omit permissionDecision under bypass | low | Hook safety fix |
 | **#1647** | fix(ls): force C locale to fix '(empty)' on non-English | low | Locale bugfix |
 | **#1645** | fix(filters): remove max_lines cap from helm filter | low | Filter bugfix |
-| **#1660** | fix: report ok for silent npm scripts | low | npm passthrough fix |
 | **#1657** | fix(tee): render absolute log path in format_hint | low | TEE UX fix |
 
 **Adoption order:** Start with #1696, #1689, #1647, #1645 (all 1-file, no interdependencies).
@@ -32,12 +31,14 @@ Features that extend filtering/rewriting — aligned with our Context Zip missio
 |----|-------|------|-----------|
 | **#1673** | refactor(json): Single-line output with truncation | low | Better JSON output handling, 2 files |
 | **#1603** | feat(discover): wire xcodebuild into rewriter registry | low | New command rewrite, 2 files |
-| **#1578** | feat(git): support git sparse-checkout subcommand | low | Git feature, 5 files |
+| **#1578** | feat(git): support git sparse-checkout subcommand | low | **DEFERRED** — upstream PR still open, revisit when merged upstream |
 | **#1634** | feat(parser): add --json global flag for vitest, jest | medium | Parser enhancement, 6 files |
 | **#1677** | feat(curl): config-driven URL allowlist | medium | Security improvement, 6 files |
 | **#1697** | feat(skills): improve triage skills scalability | low | Skills improvement, 3 files |
 
-**Adoption order:** #1603 (isolated, 2 files) → #1673 (2 files) → #1578 → #1634 → #1677.
+**Adoption order:** #1603 (isolated, 2 files) → #1673 (2 files) → #1634 → #1677.
+
+> #1578 deferred — upstream PR still open; will revisit when merged upstream.
 
 ---
 
@@ -89,7 +90,7 @@ Cherry-pick the Priority 1 batch:
 git checkout -b adopt/upstream-bugfixes-batch-1
 git fetch upstream
 
-for pr in 1696 1689 1679 1648 1647 1645 1660 1657; do
+for pr in 1696 1689 1679 1648 1647 1645 1657; do
     echo "=== PR #$pr ==="
     gh pr view $pr --repo rtk-ai/rtk --json mergeCommit --jq '.mergeCommit.oid' 2>/dev/null || echo "not merged yet"
 done

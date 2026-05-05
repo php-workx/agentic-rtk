@@ -155,7 +155,7 @@ _Externes — Problématiques_ : un des critères suivants :
 
 Si le scope dépasse 100 PRs après filtrage, afficher les 50 les plus récentes par catégorie et indiquer "... et N autres (passer `--all` pour voir toutes)".
 
-```
+```text
 ## PRs ouvertes ({total} total, {scope} dans le scope {mode})
 
 ### Nos PRs

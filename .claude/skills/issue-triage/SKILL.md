@@ -246,11 +246,11 @@ options:
 
 Si "Passer" → fin du workflow.
 
-**Plafond agents** : lancer au maximum 20 agents en parallèle. Si la sélection dépasse 20 issues, traiter en batches de 20 et afficher la progression entre chaque batch.
+**Plafond agents** : lancer au maximum 15 agents en parallèle. Si la sélection dépasse 15 issues, traiter en batches de 15 et afficher la progression entre chaque batch.
 
 ### Exécution de l'analyse
 
-Pour chaque issue sélectionnée, lancer un agent via **Task tool en parallèle** (max 20 simultanés) :
+Pour chaque issue sélectionnée, lancer un agent via **Task tool en parallèle** (max 15 simultanés) :
 
 ```
 subagent_type: general-purpose
