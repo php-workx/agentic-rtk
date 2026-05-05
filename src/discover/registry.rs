@@ -517,8 +517,8 @@ fn rewrite_compound(
         match tok.kind {
             TokenKind::Operator => {
                 let seg = cmd[seg_start..tok.offset].trim();
-                let rewritten = rewrite_segment(seg, excluded, curl_bypass)
-                    .unwrap_or_else(|| seg.to_string());
+                let rewritten =
+                    rewrite_segment(seg, excluded, curl_bypass).unwrap_or_else(|| seg.to_string());
                 if rewritten != seg {
                     any_changed = true;
                 }
@@ -571,8 +571,8 @@ fn rewrite_compound(
             }
             TokenKind::Shellism if tok.value == "&" => {
                 let seg = cmd[seg_start..tok.offset].trim();
-                let rewritten = rewrite_segment(seg, excluded, curl_bypass)
-                    .unwrap_or_else(|| seg.to_string());
+                let rewritten =
+                    rewrite_segment(seg, excluded, curl_bypass).unwrap_or_else(|| seg.to_string());
                 if rewritten != seg {
                     any_changed = true;
                 }
@@ -588,8 +588,7 @@ fn rewrite_compound(
     }
 
     let seg = cmd[seg_start..].trim();
-    let rewritten =
-        rewrite_segment(seg, excluded, curl_bypass).unwrap_or_else(|| seg.to_string());
+    let rewritten = rewrite_segment(seg, excluded, curl_bypass).unwrap_or_else(|| seg.to_string());
     if rewritten != seg {
         any_changed = true;
     }
@@ -750,7 +749,23 @@ fn is_whitespace_safe_source_file(file: &str) -> bool {
     let path = std::path::Path::new(file);
     matches!(
         path.extension().and_then(|ext| ext.to_str()),
-        Some("rs" | "js" | "ts" | "tsx" | "go" | "java" | "c" | "cpp" | "rb" | "py" | "kt" | "swift" | "sh" | "json" | "yaml" | "yml")
+        Some(
+            "rs" | "js"
+                | "ts"
+                | "tsx"
+                | "go"
+                | "java"
+                | "c"
+                | "cpp"
+                | "rb"
+                | "py"
+                | "kt"
+                | "swift"
+                | "sh"
+                | "json"
+                | "yaml"
+                | "yml"
+        )
     )
 }
 
@@ -831,7 +846,12 @@ fn rewrite_cat_plain_read(seg: &str, excluded: &[ExcludePattern]) -> Option<Stri
     } else {
         "rtk read"
     };
-    Some(format_rewrite(env_prefix, command, result.files_segment, ""))
+    Some(format_rewrite(
+        env_prefix,
+        command,
+        result.files_segment,
+        "",
+    ))
 }
 
 fn format_rewrite(env_prefix: &str, rtk_cmd: &str, rest: &str, redirect_suffix: &str) -> String {
@@ -955,7 +975,8 @@ fn rewrite_segment_inner(
     }
 
     if cmd_clean.starts_with("head -") || cmd_clean.starts_with("tail ") {
-        return rewrite_line_range(cmd_clean).map(|r| format!("{}{}{}", env_prefix, r, redirect_suffix));
+        return rewrite_line_range(cmd_clean)
+            .map(|r| format!("{}{}{}", env_prefix, r, redirect_suffix));
     }
 
     if starts_with_command_word(cmd_clean, "cat") {
@@ -1636,10 +1657,7 @@ mod tests {
     #[test]
     fn test_rewrite_cat_before_pipe_preserves_plain_read() {
         // #1639: pipe groups are left raw end-to-end
-        assert_eq!(
-            rewrite_command("cat src/main.rs | head", &[]),
-            None
-        );
+        assert_eq!(rewrite_command("cat src/main.rs | head", &[]), None);
     }
 
     #[test]
@@ -3435,11 +3453,7 @@ mod tests {
         // Loopback variant — separate marker entry.
         let opts = curl_bypass_opts(&["127.0.0.1:3300/"]);
         assert_eq!(
-            rewrite_command_with_options(
-                "curl -s http://127.0.0.1:3300/api/health",
-                &[],
-                &opts
-            ),
+            rewrite_command_with_options("curl -s http://127.0.0.1:3300/api/health", &[], &opts),
             None
         );
     }

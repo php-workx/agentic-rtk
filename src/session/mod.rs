@@ -895,7 +895,9 @@ fn rewrite_claude_record(
                                     .or_else(|| block.get("content").and_then(|c| c.as_str()))
                                     .map(|text| format!("{:x}", Sha256::digest(text.as_bytes())));
                                 let should_dedup = match (&first.content_hash, current_hash) {
-                                    (Some(first_hash), Some(current_hash)) => first_hash == &current_hash,
+                                    (Some(first_hash), Some(current_hash)) => {
+                                        first_hash == &current_hash
+                                    }
                                     _ => true, // Fallback to path-only dedup when hashes unavailable
                                 };
                                 if !should_dedup {
@@ -1456,7 +1458,10 @@ fn discover_claude_session_files() -> Result<Vec<PathBuf>> {
     for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
         if entry.file_type().is_file()
             && entry.path().extension().and_then(|e| e.to_str()) == Some("jsonl")
-            && !entry.path().components().any(|c| c.as_os_str() == "subagents")
+            && !entry
+                .path()
+                .components()
+                .any(|c| c.as_os_str() == "subagents")
         {
             files.push(entry.path().to_path_buf());
         }
@@ -1630,11 +1635,14 @@ fn parse_duration(value: &str) -> Result<Duration> {
         .with_context(|| format!("Invalid duration `{value}`"))?;
     let secs = match unit {
         "s" => n,
-        "m" => n.checked_mul(60)
+        "m" => n
+            .checked_mul(60)
             .with_context(|| format!("Duration `{value}` overflows u64"))?,
-        "h" => n.checked_mul(3600)
+        "h" => n
+            .checked_mul(3600)
             .with_context(|| format!("Duration `{value}` overflows u64"))?,
-        "d" => n.checked_mul(86400)
+        "d" => n
+            .checked_mul(86400)
             .with_context(|| format!("Duration `{value}` overflows u64"))?,
         _ => bail!("Invalid duration `{value}`; use s, m, h, or d"),
     };

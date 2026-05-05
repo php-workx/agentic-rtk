@@ -95,8 +95,14 @@ mod tests {
         assert_eq!(json["tier"], "full");
         assert_eq!(json["exit"], 0);
         assert_eq!(json["data"], 42);
-        assert!(json.get("warnings").is_none(), "warnings must be omitted on full tier");
-        assert!(json.get("raw").is_none(), "raw must be omitted on full tier");
+        assert!(
+            json.get("warnings").is_none(),
+            "warnings must be omitted on full tier"
+        );
+        assert!(
+            json.get("raw").is_none(),
+            "raw must be omitted on full tier"
+        );
     }
 
     #[test]
@@ -130,11 +136,8 @@ mod tests {
 
     #[test]
     fn passthrough_envelope_has_raw_no_data_no_warnings() {
-        let env = build_json_envelope::<i32>(
-            "vitest",
-            ParseResult::Passthrough("oops".to_string()),
-            2,
-        );
+        let env =
+            build_json_envelope::<i32>("vitest", ParseResult::Passthrough("oops".to_string()), 2);
         let json: Value = serde_json::from_str(&serde_json::to_string(&env).unwrap()).unwrap();
 
         assert_eq!(json["tier"], "passthrough");

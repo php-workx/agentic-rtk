@@ -3335,6 +3335,9 @@ mod tests {
         let cmd = Commands::Web {
             url: "https://example.com".to_string(),
         };
-        assert!(is_operational_command(&cmd), "Commands::Web should be operational");
+        assert!(
+            is_operational_command(&cmd),
+            "Commands::Web should be operational"
+        );
     }
 }
