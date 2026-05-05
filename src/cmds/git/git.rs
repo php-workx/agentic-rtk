@@ -70,8 +70,24 @@ pub fn run(
 /// Without the `--` separator git may treat an unambiguous path as a revision and
 /// emit "fatal: ambiguous argument".  We re-insert `--` before the first path-like
 /// argument; see `normalize_diff_args_impl` for the detection rules.
-fn normalize_diff_args(args: &[String]) -> Vec<String> {
-    normalize_diff_args_impl(args, |p| std::path::Path::new(p).exists())
+fn normalize_diff_args(args: &[String], repo_root: Option<&std::path::Path>) -> Vec<String> {
+    normalize_diff_args_impl(args, |p| {
+        if let Some(root) = repo_root {
+            let joined = root.join(p);
+            if joined.exists() {
+                return true;
+            }
+            // Check if tracked in git (covers deleted-but-tracked files)
+            let output = std::process::Command::new("git")
+                .args(["ls-files", "--error-unmatch", p])
+                .current_dir(root)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .output();
+            return output.map(|o| o.status.success()).unwrap_or(false);
+        }
+        std::path::Path::new(p).exists()
+    })
 }
 
 /// Testable core of `normalize_diff_args` — accepts an injectable filesystem existence checker.
@@ -142,8 +158,22 @@ fn run_diff(
 ) -> Result<i32> {
     let timer = tracking::TimedExecution::start();
 
+    // Compute repo root for repo-aware path existence checks
+    let repo_root = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()
+        .and_then(|out| {
+            if out.status.success() {
+                String::from_utf8(out.stdout).ok().map(|s| std::path::PathBuf::from(s.trim()))
+            } else {
+                None
+            }
+        });
+    let repo_root_ref = repo_root.as_deref();
+
     // Re-insert `--` when clap's trailing_var_arg consumed it (issue #1215)
-    let args = &normalize_diff_args(args);
+    let args = &normalize_diff_args(args, repo_root_ref);
 
     // Check if user wants stat output
     let wants_stat = args
@@ -2771,5 +2801,17 @@ no changes added to commit (use "git add" and/or "git commit -a")
             "Expected '+3 lines omitted' when 6 body lines truncated to 3, got:\n{}",
             result
         );
+    }    /// Repo-root-aware path resolution: the impl passes the original arg
+    /// unchanged to the checker; production callers resolve repo_root first.
+    #[test]
+    fn test_normalize_diff_args_resolves_relative_to_repo_root() {
+        let args = vec!["package.json".to_string()];
+        let normalized = normalize_diff_args_impl(&args, |p| p == "package.json");
+        assert_eq!(
+            normalized,
+            vec!["--".to_string(), "package.json".to_string()],
+            "checker receives the original arg unchanged; production caller resolves repo root"
+        );
     }
+
 }
