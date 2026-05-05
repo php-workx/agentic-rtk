@@ -102,6 +102,10 @@ fn should_tee(
     tee_dir
 }
 
+/// Conservative overhead for the truncation marker template
+/// (42 bytes + up to 18 digits for the omitted count).
+const TRUNCATION_MARKER_OVERHEAD: usize = 60;
+
 /// Write raw output to a tee file in the given directory.
 /// Returns file path on success.
 fn write_tee_file(
@@ -126,8 +130,9 @@ fn write_tee_file(
     // end; head-only truncation throws that away. 25/75 split keeps the prologue while
     // giving the summary three quarters of the budget.
     let content = if raw.len() > max_file_size {
-        let head_budget = max_file_size / 4;
-        let tail_budget = max_file_size - head_budget;
+        let available = max_file_size.saturating_sub(TRUNCATION_MARKER_OVERHEAD);
+        let head_budget = available / 4;
+        let tail_budget = available - head_budget;
 
         // Last UTF-8 char boundary at or before head_budget.
         let head_end = raw
@@ -379,6 +384,10 @@ mod tests {
         let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("bytes truncated from middle"));
         assert!(content.len() < 2000);
+        assert!(
+            content.len() <= 1000,
+            "truncated content must not exceed max_file_size"
+        );
     }
 
     #[test]
@@ -574,4 +583,21 @@ directory = "/tmp/rtk-tee"
         std::env::remove_var("RTK_TEE");
         assert!(hint.is_none(), "Should respect RTK_TEE=0");
     }
+    #[test]
+    fn test_write_tee_file_truncation_respects_budget() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let raw = "x".repeat(200);
+        let result = write_tee_file(&raw, "budget_test", tmpdir.path(), 120, 20);
+        assert!(result.is_some());
+
+        let path = result.unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(
+            content.len() <= 120,
+            "truncated content ({}) must not exceed max_file_size (120)",
+            content.len()
+        );
+        assert!(content.contains("bytes truncated from middle"));
+    }
+
 }
