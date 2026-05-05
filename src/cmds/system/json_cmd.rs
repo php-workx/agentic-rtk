@@ -61,7 +61,7 @@ pub fn run(file: &Path, max_depth: usize, schema_only: bool, verbose: u8) -> Res
 
     if truncated {
         let value: Value = serde_json::from_str(&content).context("Failed to parse JSON")?;
-        if let Some(hint) = write_json_hint(&value, file) {
+        if let Some(hint) = write_json_hint(&value, file, None) {
             eprintln!("{}", hint);
         }
     }
@@ -99,7 +99,7 @@ pub fn run_stdin(max_depth: usize, schema_only: bool, verbose: u8) -> Result<()>
 
     if truncated {
         let value: Value = serde_json::from_str(&content).context("Failed to parse JSON")?;
-        if let Some(hint) = write_json_hint(&value, Path::new("stdin")) {
+        if let Some(hint) = write_json_hint(&value, Path::new("stdin"), None) {
             eprintln!("{}", hint);
         }
     }
@@ -252,10 +252,16 @@ fn extract_schema(value: &Value, depth: usize, max_depth: usize, truncated: &mut
 }
 
 /// Write full compact JSON to a file and return a hint string.
-fn write_json_hint(value: &Value, file: &Path) -> Option<String> {
+fn write_json_hint(value: &Value, file: &Path, base_dir: Option<&std::path::Path>) -> Option<String> {
+    if std::env::var("RTK_EXPORT_JSON").ok().as_deref() != Some("1") {
+        return None;
+    }
     let full_output = serde_json::to_string(value).ok()?;
 
-    let json_dir = dirs::data_local_dir()?.join("rtk").join("json");
+    let json_dir = match base_dir {
+        Some(dir) => dir.join("rtk").join("json"),
+        None => dirs::data_local_dir()?.join("rtk").join("json"),
+    };
     std::fs::create_dir_all(&json_dir).ok()?;
 
     let epoch = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
@@ -482,6 +488,27 @@ mod tests {
         let (output, truncated) = filter_json_schema(json, 1).unwrap();
         assert!(truncated, "schema-only path should propagate truncation flag");
         assert!(output.contains('…'), "truncated schema should contain ellipsis");
+    }
+
+    #[test]
+    fn test_write_json_hint_env_gating() {
+        // Unset → skip
+        std::env::remove_var("RTK_EXPORT_JSON");
+        let value: Value = serde_json::from_str(r#"{"a": 1}"#).unwrap();
+        let result = write_json_hint(&value, Path::new("test.json"), None);
+        assert!(result.is_none(), "should skip persistence when RTK_EXPORT_JSON is unset");
+
+        // Set to 1 → persist
+        let tmpdir = tempfile::tempdir().unwrap();
+        std::env::set_var("RTK_EXPORT_JSON", "1");
+        let result = write_json_hint(&value, Path::new("test.json"), Some(tmpdir.path()));
+        assert!(result.is_some(), "should persist when RTK_EXPORT_JSON=1");
+
+        let json_dir = tmpdir.path().join("rtk").join("json");
+        let entries: Vec<_> = std::fs::read_dir(&json_dir).unwrap().filter_map(|e| e.ok()).collect();
+        assert!(!entries.is_empty(), "JSON hint file should be created under temp dir");
+
+        std::env::remove_var("RTK_EXPORT_JSON");
     }
 
 }
