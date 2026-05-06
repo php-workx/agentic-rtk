@@ -159,7 +159,7 @@ Cette approche ramène les comparaisons de ~160K à ~2–5K.
 
 Si le scope dépasse 100 issues après filtrage, afficher les 50 les plus récentes par catégorie et indiquer "... et N autres (passer `--all` pour voir toutes)".
 
-```
+```text
 ## Issues ouvertes ({total} total, {scope} dans le scope {mode})
 
 ### Critiques (risque rouge)
@@ -233,7 +233,7 @@ header: "Deep Analysis"
 multiSelect: true
 options:
   - label: "Toutes ({N} dans le scope)"
-    description: "Analyse approfondie — max 20 agents simultanés, batches si nécessaire"
+    description: "Analyse approfondie — max 15 agents simultanés, batches si nécessaire"
   - label: "Critiques uniquement"
     description: "Focus sur les {M} issues à risque rouge/jaune"
   - label: "Doublons candidats"
@@ -390,7 +390,7 @@ Si "Aucune" → `Aucune action exécutée. Workflow terminé.`
 | PR mergée liée à issue ouverte | Recommander fermeture de l'issue |
 | Issue sans activité >90j | Very Stale — proposer fermeture avec message bienveillant |
 | Duplicate confirmed in Phase 2 | Poster commentaire + fermer en faveur de l'issue originale |
-| Sélection deep analysis >20 issues | Traiter en batches de 20, afficher progression |
+| Sélection deep analysis >15 issues | Traiter en batches de 15, afficher progression |
 
 ---
 
@@ -401,5 +401,5 @@ Si "Aucune" → `Aucune action exécutée. Workflow terminé.`
 - `updatedAt` peut être null sur certaines issues → traiter comme `createdAt`
 - Ne jamais poster ou fermer sans validation explicite de l'utilisateur dans le chat
 - Les commentaires draftés doivent être visibles AVANT tout `gh issue comment`
-- Jaccard = |intersection mots| / |union mots| (exclure stop words : a, the, is, in, of, for, to, with, on, at, by, and, or, not, it, this)
+- Jaccard = |intersection mots| / |union mots| (exclure stop words, voir liste § Phase 1)
 - `--limit 500` couvre les backlogs jusqu'à 500 items ; au-delà utiliser `gh api` avec pagination curseur

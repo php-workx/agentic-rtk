@@ -23,11 +23,19 @@ pub fn run(args: &[String], verbose: u8) -> Result<i32> {
         .iter()
         .any(|a| (a.starts_with('-') && !a.starts_with("--") && a.contains('a')) || a == "--all");
 
-    // `-l` (or any short cluster containing 'l') means the user explicitly asked
-    // for the long listing, so we preserve permission info as octal.
-    let show_long = args
-        .iter()
-        .any(|a| a.starts_with('-') && !a.starts_with("--") && a.contains('l'));
+    // Long-format triggers: any short cluster containing `l`, `g`, `o`, or `n`
+    // (GNU/BSD aliases that imply long output), or `--format=long`.
+    // When triggered, we preserve permission info as octal.
+    let show_long = args.iter().any(|a| {
+        if a.starts_with("--") {
+            a == "--format=long" || a.starts_with("--format=long ")
+        } else if a.starts_with('-') {
+            let cluster = a.trim_start_matches('-');
+            cluster.chars().any(|c| matches!(c, 'l' | 'g' | 'o' | 'n'))
+        } else {
+            false
+        }
+    });
 
     let flags: Vec<&str> = args
         .iter()
@@ -223,12 +231,19 @@ fn compact_ls(raw: &str, show_all: bool, show_long: bool) -> (String, String) {
     let mut files: Vec<(String, String, String)> = Vec::new(); // (name, size, octal_perms)
     let mut by_ext: HashMap<String, usize> = HashMap::new();
 
+    // Track parser hit-rate so we can fall back to raw output when every
+    // non-trivial line fails (e.g. localized ls output that escapes LC_ALL).
+    let mut parse_attempts: usize = 0;
+    let mut parse_failures: usize = 0;
+
     for line in raw.lines() {
         if line.starts_with("total ") || line.is_empty() {
             continue;
         }
 
+        parse_attempts += 1;
         let Some((file_type, perms, size, name)) = parse_ls_line(line) else {
+            parse_failures += 1;
             continue;
         };
 
@@ -255,6 +270,13 @@ fn compact_ls(raw: &str, show_all: bool, show_long: bool) -> (String, String) {
             *by_ext.entry(ext).or_insert(0) += 1;
             files.push((name, human_size(size), octal));
         }
+    }
+
+    // If every non-trivial line failed to parse, fall back to raw ls output
+    // instead of pretending the directory is empty. Hides parser regressions
+    // less and respects the "filter falls back to raw on failure" contract.
+    if parse_attempts > 0 && parse_failures == parse_attempts {
+        return (raw.to_string(), String::new());
     }
 
     if dirs.is_empty() && files.is_empty() {
@@ -540,22 +562,20 @@ mod tests {
     // The fix forces LC_ALL=C when invoking `ls` (see run() above), so this
     // test documents the parser's contract: it only handles English ls output.
     #[test]
-    fn test_compact_localized_output_skipped() {
-        // Italian-locale ls output (LANG=it_IT.UTF-8): "30 apr 14.54" date format
+    fn test_compact_localized_output_falls_back_to_raw() {
+        // Italian-locale ls output (LANG=it_IT.UTF-8): "30 apr 14.54" date format.
+        // Parser fails on every non-trivial line; instead of returning "(empty)"
+        // (which silently hides the data), we fall back to raw output.
         let italian_input = "totale 8\n\
                              drwxr-xr-x  2 user user 4096 30 apr 14.54 src\n\
                              -rw-r--r--  1 user user 1234 30 apr 14.54 main.rs\n";
         let (entries, _summary) = compact_ls(italian_input, false, false);
-        // Without LC_ALL=C, parser fails on every line -> "(empty)"
-        // This is why run() must force C locale.
         assert_eq!(
-            entries, "(empty)\n",
-            "parser should fail on localized output (relies on LC_ALL=C in run())"
+            entries, italian_input,
+            "fully-failed parse should pass the original ls output through"
         );
-        assert!(
-            count_tokens(&entries) < count_tokens(italian_input),
-            "compacted localized output should reduce tokens"
-        );
+        // Token count is preserved (no savings, but no data loss either).
+        assert_eq!(count_tokens(&entries), count_tokens(italian_input));
     }
 
     #[test]

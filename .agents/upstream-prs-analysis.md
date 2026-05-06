@@ -68,6 +68,7 @@ One-off fixes. Adopt as needed or in batches.
 
 | PR | Title | Reason |
 |----|-------|--------|
+| #1660 | fix(npm): report ok for silent npm scripts | Conflicts with fork's security-warning handling; held for traceability |
 | #1693 | refacto(crate): split into lib + bin | 9-file refactor; wait for upstream to stabilize |
 | #1692 | Next Release | 14-file release PR; merge as full sync, not cherry-pick |
 | #1670 | feat(dbt): add rtk dbt command | 32 files, high risk; defer until needed |

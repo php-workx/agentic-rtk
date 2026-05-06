@@ -130,12 +130,16 @@ fn compact_json(value: &Value, depth: usize, max_depth: usize, truncated: &mut b
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => n.to_string(),
         Value::String(s) => {
+            // Escape via serde_json so quotes, backslashes, and control chars
+            // produce valid JSON. Manual format!(r#""{}""#, s) would emit
+            // invalid output for inputs containing `"`, `\`, or `\n`.
             if s.chars().count() > STRING_CHARS_LIMIT {
                 *truncated = true;
-                let truncated_str: String = s.chars().take(STRING_CHARS_LIMIT - 1).collect();
-                format!(r#""{}…""#, truncated_str)
+                let mut truncated_str: String = s.chars().take(STRING_CHARS_LIMIT - 1).collect();
+                truncated_str.push('…');
+                Value::String(truncated_str).to_string()
             } else {
-                format!(r#""{}""#, s)
+                Value::String(s.clone()).to_string()
             }
         }
         Value::Array(arr) => {
@@ -169,7 +173,8 @@ fn compact_json(value: &Value, depth: usize, max_depth: usize, truncated: &mut b
                     }
                     let val = &map[*key];
                     let val_str = compact_json(val, depth + 1, max_depth, truncated);
-                    parts.push(format!(r#""{}":{}"#, key, val_str));
+                    let key_json = Value::String((*key).clone()).to_string();
+                    parts.push(format!("{}:{}", key_json, val_str));
                 }
                 format!("{{{}}}", parts.join(","))
             }
@@ -243,7 +248,8 @@ fn extract_schema(value: &Value, depth: usize, max_depth: usize, truncated: &mut
                     }
                     let val = &map[*key];
                     let val_schema = extract_schema(val, depth + 1, max_depth, truncated);
-                    parts.push(format!(r#""{}":{}"#, key, val_schema));
+                    let key_json = Value::String((*key).clone()).to_string();
+                    parts.push(format!("{}:{}", key_json, val_schema));
                 }
                 format!("{{{}}}", parts.join(","))
             }
@@ -284,17 +290,9 @@ fn write_json_hint(value: &Value, file: &Path, base_dir: Option<&std::path::Path
 
     cleanup_old_json_files(&json_dir);
 
-    let hint = if let Some(home) = dirs::home_dir() {
-        if let Ok(relative) = filepath.strip_prefix(&home) {
-            format!("[full output: ~/{}]", relative.display())
-        } else {
-            format!("[full output: {}]", filepath.display())
-        }
-    } else {
-        format!("[full output: {}]", filepath.display())
-    };
-
-    Some(hint)
+    // Always emit absolute path — `~` doesn't survive shell quoting and
+    // downstream consumers copy this hint verbatim (matches tee::format_hint).
+    Some(format!("[full output: {}]", filepath.display()))
 }
 
 /// Clean up old JSON full compact files, keeping only the last 20.

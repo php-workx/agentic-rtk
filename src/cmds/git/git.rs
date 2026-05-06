@@ -1455,13 +1455,24 @@ fn run_fetch(args: &[String], verbose: u8, global_args: &[String]) -> Result<i32
 }
 
 /// Format status message for stash operations.
-/// - For create operations (push/save): checks for "No local changes"
-/// - For other operations: uses "ok stash <subcommand>" format
+/// - `create`: returns the raw object id git emitted (callers consume it).
+/// - `push`/`save` (or any pathspec-prefixed push): checks for "No local changes".
+/// - Other subcommands: "ok stash <subcommand>".
 fn format_stash_message(subcommand: Option<&str>, result: &CaptureResult) -> String {
     match subcommand {
+        // `git stash create` prints a SHA-1 on success that callers can stash@{...}
+        // against. Preserve it verbatim instead of replacing with "ok stash create".
+        Some("create") => {
+            let trimmed = result.stdout.trim();
+            if trimmed.is_empty() {
+                "ok (nothing to stash)".to_string()
+            } else {
+                trimmed.to_string()
+            }
+        }
         None | Some("push") | Some("save") => {
             // Create operations check for "no local changes"
-            if result.stdout.contains("No local changes") {
+            if stash_push_is_noop(&result.combined()) {
                 "ok (nothing to stash)".to_string()
             } else {
                 "ok stashed".to_string()
@@ -1489,6 +1500,23 @@ fn run_stash(
             cmd.args(["stash", "list"]);
             let result = exec_capture(&mut cmd).context("Failed to run git stash list")?;
 
+            // Fall back to raw output on git failure — never synthesize a
+            // success message ("No stashes") when git itself errored.
+            if !result.success() {
+                eprintln!("FAILED: git stash list");
+                let combined = result.combined();
+                if !result.stderr.trim().is_empty() {
+                    eprintln!("{}", result.stderr);
+                }
+                timer.track(
+                    "git stash list",
+                    "rtk git stash list",
+                    &combined,
+                    &combined,
+                );
+                return Ok(result.exit_code);
+            }
+
             if result.stdout.trim().is_empty() {
                 let msg = "No stashes";
                 println!("{}", msg);
@@ -1512,6 +1540,23 @@ fn run_stash(
                 cmd.arg(arg);
             }
             let result = exec_capture(&mut cmd).context("Failed to run git stash show")?;
+
+            // Fall back to raw output on git failure — never synthesize
+            // "Empty stash" when git itself errored.
+            if !result.success() {
+                eprintln!("FAILED: git stash show");
+                let combined = result.combined();
+                if !result.stderr.trim().is_empty() {
+                    eprintln!("{}", result.stderr);
+                }
+                timer.track(
+                    "git stash show",
+                    "rtk git stash show",
+                    &combined,
+                    &combined,
+                );
+                return Ok(result.exit_code);
+            }
 
             let filtered = if result.stdout.trim().is_empty() {
                 let msg = "Empty stash";
@@ -1614,7 +1659,6 @@ fn run_stash(
 /// Detect the "git stash push" no-op case where git exits 0 but did not
 /// actually create a stash entry. Covers both an entirely clean tree and
 /// pathspec-restricted invocations whose pathspecs matched nothing.
-#[allow(dead_code)]
 fn stash_push_is_noop(combined: &str) -> bool {
     combined.contains("No local changes to save")
 }

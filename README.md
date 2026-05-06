@@ -79,7 +79,7 @@ When a compressor delivers savings, RTK tags the command in the local SQLite dat
 |---------|-------------|
 | **xcodebuild rewrite** | `rtk xcodebuild` is now recognized and rewritten into compact output |
 | **Unicode-safe JSON truncation** | `rtk json` no longer splits multi-byte characters mid-glyph |
-| **curl URL allowlist** | Configure allowed domains in `rtk.toml` to bypass schema-mode rewrite |
+| **curl URL allowlist** | Configure allowed domains in `config.toml` to bypass schema-mode rewrite |
 | **`--json` flag for jest & playwright** | Machine-readable JSON envelopes for orchestrators and CI parsers |
 
 ## Token Savings (30-min Claude Code Session)
@@ -311,12 +311,12 @@ rtk session                     # Show RTK adoption across recent sessions
 ```bash
 -u, --ultra-compact    # ASCII icons, inline format (extra token savings)
 -v, --verbose          # Increase verbosity (-v, -vv, -vvv)
-    --json             # Machine-readable JSON envelope (untruncated)
+    --json             # Machine-readable JSON envelope (full/degraded tiers untruncated; passthrough `raw` may be truncated)
 ```
 
 ### JSON output for programmatic consumers
 
-The `--json` flag emits a stable JSON envelope on stdout instead of the human formatter. It bypasses the top-N truncation that compact mode applies (e.g. `take(5)` for failures), which makes it suitable for orchestrators, CI parsers, and downstream tools that need every item.
+The `--json` flag emits a stable JSON envelope on stdout instead of the human formatter. For `full` and `degraded` tiers it bypasses the top-N truncation that compact mode applies (e.g. `take(5)` for failures), which makes it suitable for orchestrators, CI parsers, and downstream tools that need every item. For the `passthrough` tier (parser fallback) the envelope's `raw` field is still truncated to `passthrough_max_chars` per the envelope contract.
 
 `--json` conflicts with `-v` / `--verbose` and `--ultra-compact` (clap rejects with exit code 2).
 
