@@ -1045,11 +1045,18 @@ fn rewrite_segment_inner(
     // Skip the rewrite when the URL contains any user-configured marker.
     // Empty list = unchanged historical behavior (every curl gets rewritten).
     // Configure via `[curl] bypass_url_markers` in `~/.config/rtk/config.toml`.
-    if rule.rtk_cmd == "rtk curl"
-        && !curl_bypass.is_empty()
-        && curl_bypass.iter().any(|marker| cmd_clean.contains(marker))
-    {
-        return None;
+    //
+    // Match against URL operands only (positional args + --url=value), not the
+    // entire command string — otherwise a marker that appears in `-H 'X-Upstream: ...'`
+    // or a `-d` body would silently disable rtk curl rewriting for an unrelated URL.
+    if rule.rtk_cmd == "rtk curl" && !curl_bypass.is_empty() {
+        let urls = extract_curl_urls(cmd_clean);
+        if curl_bypass
+            .iter()
+            .any(|marker| urls.iter().any(|u| u.contains(marker)))
+        {
+            return None;
+        }
     }
 
     // #1627: macOS ls -O / -@ / -e exist specifically to surface metadata
@@ -1074,6 +1081,98 @@ fn rewrite_segment_inner(
     }
 
     None
+}
+
+/// Extract URL operands from a `curl` command line.
+///
+/// Returns positional arguments that look like URLs plus the value of any
+/// `--url`/`--url=` flag. Skips known curl flags that take a value (so the
+/// next token isn't misclassified as a URL) and ignores option arguments
+/// like `-H`, `-d`, `-X`.
+///
+/// Used to ensure `[curl] bypass_url_markers` only matches against actual
+/// request URLs, not header/body content that happens to contain the marker.
+fn extract_curl_urls(cmd: &str) -> Vec<String> {
+    // curl flags that consume the next token as their value. Anything after
+    // these is NOT a URL even if it looks like one.
+    const FLAGS_WITH_VALUE: &[&str] = &[
+        "-H",
+        "--header",
+        "-d",
+        "--data",
+        "--data-raw",
+        "--data-binary",
+        "--data-urlencode",
+        "-F",
+        "--form",
+        "-X",
+        "--request",
+        "-A",
+        "--user-agent",
+        "-e",
+        "--referer",
+        "-b",
+        "--cookie",
+        "-c",
+        "--cookie-jar",
+        "-o",
+        "--output",
+        "-T",
+        "--upload-file",
+        "-u",
+        "--user",
+        "--cacert",
+        "--cert",
+        "--key",
+        "--proxy",
+        "-x",
+        "--connect-timeout",
+        "--max-time",
+        "-m",
+        "--retry",
+    ];
+
+    // Use the shell-aware splitter so quoted args like `-H 'X-Upstream: ...'`
+    // produce a single header-value token. Plain split_whitespace would split
+    // on the space inside the quoted value and expose the marker substring
+    // as if it were a positional URL operand.
+    let tokens = shell_split(cmd);
+    let mut urls = Vec::new();
+    let mut i = 0;
+    if tokens.first().is_some_and(|t| t.ends_with("curl")) {
+        i = 1;
+    }
+    while i < tokens.len() {
+        let tok = tokens[i].as_str();
+        // --url=value form
+        if let Some(val) = tok.strip_prefix("--url=") {
+            urls.push(val.to_string());
+            i += 1;
+            continue;
+        }
+        // --url <value> form
+        if tok == "--url" {
+            if let Some(val) = tokens.get(i + 1) {
+                urls.push(val.clone());
+            }
+            i += 2;
+            continue;
+        }
+        // Skip flags that consume the next token
+        if FLAGS_WITH_VALUE.contains(&tok) {
+            i += 2;
+            continue;
+        }
+        // Other flags: skip just this token
+        if tok.starts_with('-') {
+            i += 1;
+            continue;
+        }
+        // Positional arg: treat as URL operand
+        urls.push(tok.to_string());
+        i += 1;
+    }
+    urls
 }
 
 /// Detect macOS-only `ls` metadata flags whose entire purpose is to surface
@@ -1116,6 +1215,14 @@ fn strip_word_prefix<'a>(cmd: &'a str, prefix: &str) -> Option<&'a str> {
 mod tests {
     use super::super::report::RtkStatus;
     use super::*;
+
+    /// Whitespace-tokenized count, mirroring core::utils::count_tokens.
+    /// Used by rewrite tests to guard against regressions that keep the
+    /// rewrite shape but mangle args (which would defeat downstream
+    /// token savings at execution time).
+    fn count_tokens(s: &str) -> usize {
+        s.split_whitespace().count()
+    }
 
     #[test]
     fn test_classify_git_status() {
@@ -2325,17 +2432,33 @@ mod tests {
 
     #[test]
     fn test_rewrite_xcodebuild() {
+        let original = "xcodebuild build -project Foo.xcodeproj";
+        let rewritten = rewrite_command(original, &[]).expect("xcodebuild rewrites");
+        assert_eq!(rewritten, "rtk xcodebuild build -project Foo.xcodeproj");
+        // Rewrite only adds the `rtk` prefix — never reorder or drop tokens.
+        // Guards against future regressions that keep the rewrite firing
+        // while corrupting the args (which would defeat token savings at
+        // execution time even though classification still passes).
         assert_eq!(
-            rewrite_command("xcodebuild build -project Foo.xcodeproj", &[]),
-            Some("rtk xcodebuild build -project Foo.xcodeproj".into())
+            count_tokens(&rewritten),
+            count_tokens(original) + 1,
+            "rewrite must add exactly one token (the `rtk` prefix)"
         );
     }
 
     #[test]
     fn test_rewrite_xcodebuild_test() {
+        let original =
+            "xcodebuild test -scheme MyApp -destination 'platform=iOS Simulator,name=iPhone 15'";
+        let rewritten = rewrite_command(original, &[]).expect("xcodebuild rewrites");
         assert_eq!(
-            rewrite_command("xcodebuild test -scheme MyApp -destination 'platform=iOS Simulator,name=iPhone 15'", &[]),
-            Some("rtk xcodebuild test -scheme MyApp -destination 'platform=iOS Simulator,name=iPhone 15'".into())
+            rewritten,
+            "rtk xcodebuild test -scheme MyApp -destination 'platform=iOS Simulator,name=iPhone 15'"
+        );
+        assert_eq!(
+            count_tokens(&rewritten),
+            count_tokens(original) + 1,
+            "rewrite must add exactly one token (the `rtk` prefix)"
         );
     }
 
@@ -3581,6 +3704,58 @@ mod tests {
             ),
             Some("rtk git status && curl http://localhost:3300/api/change-requests".into())
         );
+    }
+
+    #[test]
+    fn test_rewrite_curl_marker_in_header_does_not_bypass() {
+        // Regression: bypass markers must only match URL operands, not -H
+        // header values or -d body content. A request whose actual URL
+        // doesn't contain the marker should still get rewritten even when
+        // the marker text happens to appear inside a header.
+        let opts = curl_bypass_opts(&["localhost:3300/"]);
+        assert_eq!(
+            rewrite_command_with_options(
+                "curl -H 'X-Upstream: localhost:3300/' https://api.example.com/data",
+                &[],
+                &opts
+            ),
+            Some("rtk curl -H 'X-Upstream: localhost:3300/' https://api.example.com/data".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_curl_marker_in_data_body_does_not_bypass() {
+        // Same regression, body payload form: marker inside -d should not
+        // disable rtk curl when the URL doesn't match.
+        let opts = curl_bypass_opts(&["internal.example.com/"]);
+        assert_eq!(
+            rewrite_command_with_options(
+                "curl -X POST -d 'host=internal.example.com/foo' https://public.example.com/api",
+                &[],
+                &opts
+            ),
+            Some(
+                "rtk curl -X POST -d 'host=internal.example.com/foo' https://public.example.com/api"
+                    .into()
+            )
+        );
+    }
+
+    #[test]
+    fn test_extract_curl_urls_skips_flag_values() {
+        let urls = super::extract_curl_urls(
+            "curl -H 'X-Upstream: localhost:3300/' -X POST -d body=x https://api.example.com/data",
+        );
+        assert_eq!(urls, vec!["https://api.example.com/data".to_string()]);
+    }
+
+    #[test]
+    fn test_extract_curl_urls_handles_url_flag() {
+        let urls = super::extract_curl_urls("curl --url https://example.com/foo --silent");
+        assert_eq!(urls, vec!["https://example.com/foo".to_string()]);
+
+        let urls = super::extract_curl_urls("curl --url=https://example.com/bar");
+        assert_eq!(urls, vec!["https://example.com/bar".to_string()]);
     }
 
     #[test]

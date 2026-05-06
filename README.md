@@ -80,7 +80,7 @@ When a compressor delivers savings, RTK tags the command in the local SQLite dat
 | **xcodebuild rewrite** | `rtk xcodebuild` is now recognized and rewritten into compact output |
 | **Unicode-safe JSON truncation** | `rtk json` no longer splits multi-byte characters mid-glyph |
 | **curl URL allowlist** | Configure allowed domains in `config.toml` to bypass schema-mode rewrite |
-| **`--json` flag for jest & playwright** | Machine-readable JSON envelopes for orchestrators and CI parsers |
+| **`--json` flag for vitest, jest & playwright** | Machine-readable JSON envelopes for orchestrators and CI parsers |
 
 ## Token Savings (30-min Claude Code Session)
 
