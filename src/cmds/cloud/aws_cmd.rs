@@ -255,7 +255,27 @@ fn run_generic(subcommand: &str, args: &[String], verbose: u8, full_sub: &str) -
         return Ok(crate::core::utils::exit_code_from_output(&output, "aws"));
     }
 
-    let slug = format!("aws_{}", full_sub.replace(' ', "_"));
+    // Build slug from service + sub-subcommand only (the first two tokens of
+    // `full_sub`). User-provided args can contain secrets or unsafe filename
+    // chars, so we strip everything past the subcommand and sanitize.
+    let slug = {
+        let safe: String = full_sub
+            .split_whitespace()
+            .take(2)
+            .collect::<Vec<_>>()
+            .join("_")
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .take(40)
+            .collect();
+        format!("aws_{}", safe)
+    };
     let filtered = match json_cmd::filter_json_schema(&raw, JSON_COMPRESS_DEPTH) {
         Ok((schema, truncated)) => {
             // When schema elision drops keys/depth, force-tee raw payload so

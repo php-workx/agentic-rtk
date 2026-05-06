@@ -1950,6 +1950,20 @@ fn run_cli() -> Result<i32> {
             if show {
                 hooks::init::show_config(codex)?;
             } else if uninstall {
+                // Antigravity / Kilocode have install-only paths today. Bail
+                // with a clear error instead of falling through to the
+                // claude/cursor uninstall path (which would either fail with
+                // a misleading message or remove the wrong agent).
+                if agent == Some(AgentTarget::Antigravity) {
+                    anyhow::bail!(
+                        "Uninstall is not yet supported for --agent antigravity. Remove .agents/rules/antigravity-rtk-rules.md manually."
+                    );
+                }
+                if agent == Some(AgentTarget::Kilocode) {
+                    anyhow::bail!(
+                        "Uninstall is not yet supported for --agent kilocode. Remove .kilocode/rules/rtk-rules.md manually."
+                    );
+                }
                 let cursor = agent == Some(AgentTarget::Cursor);
                 hooks::init::uninstall(global, gemini, codex, cursor, cli.verbose)?;
             } else if gemini {

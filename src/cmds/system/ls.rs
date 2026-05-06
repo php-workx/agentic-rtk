@@ -280,10 +280,35 @@ fn compact_ls(raw: &str, show_all: bool, show_long: bool) -> (String, String) {
     }
 
     // If every non-trivial line failed to parse, fall back to raw ls output
-    // instead of pretending the directory is empty. Hides parser regressions
-    // less and respects the "filter falls back to raw on failure" contract.
+    // instead of pretending the directory is empty. The raw came from an
+    // internally-rewritten `ls -la`, so when the user did NOT pass `-a`,
+    // strip dotfile lines so the visible output matches what they asked for.
     if parse_attempts > 0 && parse_failures == parse_attempts {
-        return (raw.to_string(), String::new());
+        if show_all {
+            return (raw.to_string(), String::new());
+        }
+        let mut kept: Vec<&str> = Vec::new();
+        for line in raw.lines() {
+            let keep = if line.starts_with("total ") || line.is_empty() {
+                true
+            } else {
+                // Last whitespace-separated field is the filename in `ls -l`.
+                match line.split_whitespace().next_back() {
+                    Some(name) => !name.starts_with('.'),
+                    None => true,
+                }
+            };
+            if keep {
+                kept.push(line);
+            }
+        }
+        let filtered = kept.join("\n");
+        let result = if filtered.ends_with('\n') {
+            filtered
+        } else {
+            format!("{}\n", filtered)
+        };
+        return (result, String::new());
     }
 
     if dirs.is_empty() && files.is_empty() {

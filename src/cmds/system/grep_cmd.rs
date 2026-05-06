@@ -63,6 +63,21 @@ pub fn run(
     let exit_code = result.exit_code;
     let raw_output = result.stdout.clone();
 
+    // When the user passes output-shaping flags (-c, -l, -L, -o, -Z),
+    // rg/grep emit something other than the standard `file:line:content`
+    // format the grouped parser expects. Short-circuit to raw output to
+    // avoid corrupting `rg --count`, `rg -l`, etc.
+    if has_format_flag(extra_args) {
+        print!("{}", raw_output);
+        timer.track(
+            &format!("grep -rn '{}' {}", pattern, path),
+            "rtk grep",
+            &raw_output,
+            &raw_output,
+        );
+        return Ok(exit_code);
+    }
+
     if result.stdout.trim().is_empty() {
         // Show stderr for errors (bad regex, missing file, etc.)
         if exit_code == 2 && !result.stderr.trim().is_empty() {
@@ -124,7 +139,6 @@ pub fn run(
     Ok(exit_code)
 }
 
-#[allow(dead_code)]
 fn has_format_flag(extra_args: &[String]) -> bool {
     extra_args.iter().any(|arg| {
         matches!(
