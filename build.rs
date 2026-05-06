@@ -2,7 +2,46 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
+fn rtk_version() -> String {
+    let base = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_string());
+
+    // If building from an exact tag, keep the version clean for releases
+    let is_exact_tag = std::process::Command::new("git")
+        .args(["describe", "--exact-match", "--tags"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if is_exact_tag {
+        return base;
+    }
+
+    let hash = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    let dirty = std::process::Command::new("git")
+        .args(["diff", "--quiet"])
+        .status()
+        .map(|s| !s.success())
+        .unwrap_or(false);
+
+    if dirty {
+        format!("{}+{}-dirty", base, hash)
+    } else if hash.is_empty() {
+        base
+    } else {
+        format!("{}+{}", base, hash)
+    }
+}
+
 fn main() {
+    println!("cargo:rustc-env=RTK_VERSION={}", rtk_version());
+
     #[cfg(windows)]
     {
         // Clap + the full command graph can exceed the default 1 MiB Windows
