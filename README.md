@@ -154,7 +154,7 @@ rtk init -g                     # Claude Code (default)
 rtk init -g --gemini            # Gemini CLI
 rtk init -g --codex             # Codex (OpenAI)
 rtk init -g --agent cursor      # Cursor
-rtk init -g --copilot           # Copilot
+rtk init --copilot              # Copilot
 rtk init --agent windsurf       # Windsurf
 rtk init --agent cline          # Cline / Roo Code
 rtk init --agent kilocode       # Kilo Code
@@ -442,8 +442,8 @@ RTK supports 12 AI coding tools. Each integration transparently rewrites shell c
 | Tool | Install | Method |
 |------|---------|--------|
 | **Claude Code** | `rtk init -g` | PreToolUse hook (bash) |
-| **GitHub Copilot (VS Code)** | `rtk init -g --copilot` | PreToolUse hook — transparent rewrite |
-| **GitHub Copilot CLI** | `rtk init -g --copilot` | PreToolUse deny-with-suggestion (CLI limitation) |
+| **GitHub Copilot (VS Code)** | `rtk init --copilot` | PreToolUse hook — transparent rewrite |
+| **GitHub Copilot CLI** | `rtk init --copilot` | PreToolUse deny-with-suggestion (CLI limitation) |
 | **Cursor** | `rtk init -g --agent cursor` | preToolUse hook (hooks.json) |
 | **Gemini CLI** | `rtk init -g --gemini` | BeforeTool hook |
 | **Codex** | `rtk init -g --codex` | AGENTS.md + RTK.md instructions |

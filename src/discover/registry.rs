@@ -448,17 +448,28 @@ pub struct RewriteOptions {
 /// Returns `None` if the command is unsupported or ignored (hook should pass through).
 ///
 /// Handles compound commands (`&&`, `||`, `;`) by rewriting each segment independently.
-/// For pipes (`|`), only rewrites the left-hand command (pipe targets stay raw),
-/// but continues rewriting segments after subsequent `&&`/`||`/`;` operators.
+/// For pipes (`|`), leaves the entire pipe group raw end-to-end (rtk's grouped
+/// output format breaks pipe consumers like `xargs`), but continues rewriting
+/// segments after subsequent `&&`/`||`/`;` operators.
 ///
 /// Reads `[curl] bypass_url_markers` from `config.toml` to decide whether a
 /// `curl` segment should be passed through unchanged. For explicit control
 /// over that list (e.g. in tests), use `rewrite_command_with_options`.
 pub fn rewrite_command(cmd: &str, excluded: &[String]) -> Option<String> {
-    let opts = RewriteOptions {
-        curl_bypass_url_markers: crate::core::config::Config::load()
-            .map(|c| c.curl.bypass_url_markers)
-            .unwrap_or_default(),
+    // Surface the load error before falling back to defaults so a broken
+    // config doesn't silently re-enable curl rewrites for endpoints the
+    // user explicitly opted out of.
+    let opts = match crate::core::config::Config::load() {
+        Ok(config) => RewriteOptions {
+            curl_bypass_url_markers: config.curl.bypass_url_markers,
+        },
+        Err(err) => {
+            eprintln!(
+                "[rtk] warning: failed to load curl bypass markers (using defaults): {}",
+                err
+            );
+            RewriteOptions::default()
+        }
     };
     rewrite_command_with_options(cmd, excluded, &opts)
 }
@@ -1069,14 +1080,21 @@ fn rewrite_segment_inner(
 /// extra columns the rtk ls filter strips (#1627): `-O` (BSD file flags),
 /// `-@` (extended attributes), `-e` (ACL entries), and any cluster that
 /// contains them like `-lO`, `-lOe`, `-l@e`.
+///
+/// Stops scanning at the `--` operand terminator so `ls -- -@snapshot`
+/// (a valid filename starting with `-@`) isn't misclassified as a
+/// metadata flag and forced into passthrough.
 fn has_ls_metadata_flag(cmd: &str) -> bool {
-    cmd.split_whitespace().any(|tok| {
-        if !tok.starts_with('-') || tok.starts_with("--") || tok == "-" {
-            return false;
-        }
-        let chars = &tok[1..];
-        chars.contains('O') || chars.contains('@') || chars.contains('e')
-    })
+    cmd.split_whitespace()
+        .skip(1) // skip the `ls` token itself
+        .take_while(|tok| *tok != "--")
+        .any(|tok| {
+            if !tok.starts_with('-') || tok.starts_with("--") || tok == "-" {
+                return false;
+            }
+            let chars = &tok[1..];
+            chars.contains('O') || chars.contains('@') || chars.contains('e')
+        })
 }
 
 /// Strip a command prefix with word-boundary check.

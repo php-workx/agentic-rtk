@@ -792,9 +792,14 @@ fn uninstall_codex_at(codex_dir: &Path, verbose: u8) -> Result<Vec<String>> {
                     if let Some(nested) = entry.get_mut("hooks").and_then(|h| h.as_array_mut()) {
                         let nested_before = nested.len();
                         nested.retain(|hook| {
+                            // Strip both the current Codex session hook command and the
+                            // legacy generic alias so older `hooks.json` entries don't
+                            // survive `rtk init -g --codex --uninstall`.
                             hook.get("command")
                                 .and_then(|c| c.as_str())
-                                .is_none_or(|cmd| cmd != CODEX_SESSION_HOOK_COMMAND)
+                                .is_none_or(|cmd| {
+                                    cmd != CODEX_SESSION_HOOK_COMMAND && cmd != "rtk session hook"
+                                })
                         });
                         if nested.len() < nested_before {
                             modified = true;

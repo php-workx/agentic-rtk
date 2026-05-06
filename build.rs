@@ -24,16 +24,22 @@ fn rtk_version() -> String {
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
 
+    // `git status --porcelain` covers staged + unstaged + untracked changes;
+    // `git diff --quiet` only flagged unstaged tracked diffs.
     let dirty = std::process::Command::new("git")
-        .args(["diff", "--quiet"])
-        .status()
-        .map(|s| !s.success())
+        .args(["status", "--porcelain"])
+        .output()
+        .map(|o| o.status.success() && !o.stdout.is_empty())
         .unwrap_or(false);
 
-    if dirty {
+    if hash.is_empty() {
+        if dirty {
+            format!("{}+dirty", base)
+        } else {
+            base
+        }
+    } else if dirty {
         format!("{}+{}-dirty", base, hash)
-    } else if hash.is_empty() {
-        base
     } else {
         format!("{}+{}", base, hash)
     }
@@ -41,6 +47,12 @@ fn rtk_version() -> String {
 
 fn main() {
     println!("cargo:rustc-env=RTK_VERSION={}", rtk_version());
+    // RTK_VERSION depends on git state; rerun when commits/branches/index move
+    // so cargo doesn't cache a stale version across checkouts or new commits.
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/index");
+    println!("cargo:rerun-if-changed=.git/packed-refs");
+    println!("cargo:rerun-if-changed=.git/refs");
 
     #[cfg(windows)]
     {
