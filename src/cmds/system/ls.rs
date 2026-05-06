@@ -24,11 +24,18 @@ pub fn run(args: &[String], verbose: u8) -> Result<i32> {
         .any(|a| (a.starts_with('-') && !a.starts_with("--") && a.contains('a')) || a == "--all");
 
     // Long-format triggers: any short cluster containing `l`, `g`, `o`, or `n`
-    // (GNU/BSD aliases that imply long output), or `--format=long`.
-    // When triggered, we preserve permission info as octal.
-    let show_long = args.iter().any(|a| {
+    // (GNU/BSD aliases that imply long output), `--format=long`, or
+    // `--format long` (two-argument form). When triggered, we preserve
+    // permission info as octal.
+    let show_long = args.iter().enumerate().any(|(i, a)| {
         if a.starts_with("--") {
-            a == "--format=long" || a.starts_with("--format=long ")
+            if a == "--format=long" || a.starts_with("--format=long ") {
+                return true;
+            }
+            if a == "--format" {
+                return args.get(i + 1).map(|n| n == "long").unwrap_or(false);
+            }
+            false
         } else if a.starts_with('-') {
             let cluster = a.trim_start_matches('-');
             cluster.chars().any(|c| matches!(c, 'l' | 'g' | 'o' | 'n'))

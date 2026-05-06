@@ -158,18 +158,24 @@ fn run_diff(
 ) -> Result<i32> {
     let timer = tracking::TimedExecution::start();
 
-    // Compute repo root for repo-aware path existence checks
-    let repo_root = std::process::Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .and_then(|out| {
-            if out.status.success() {
-                String::from_utf8(out.stdout).ok().map(|s| std::path::PathBuf::from(s.trim()))
-            } else {
-                None
-            }
-        });
+    // Compute repo root for repo-aware path existence checks. Honor global
+    // args (`-C <dir>`, `--git-dir`, etc.) so the rev-parse runs against the
+    // same repo as the user's diff command, not the process CWD.
+    let repo_root = {
+        let mut repo_cmd = git_cmd(global_args);
+        repo_cmd.args(["rev-parse", "--show-toplevel"]);
+        repo_cmd.output()
+    }
+    .ok()
+    .and_then(|out| {
+        if out.status.success() {
+            String::from_utf8(out.stdout)
+                .ok()
+                .map(|s| std::path::PathBuf::from(s.trim()))
+        } else {
+            None
+        }
+    });
     let repo_root_ref = repo_root.as_deref();
 
     // Re-insert `--` when clap's trailing_var_arg consumed it (issue #1215)
@@ -1730,6 +1736,23 @@ fn run_worktree(args: &[String], verbose: u8, global_args: &[String]) -> Result<
     let mut cmd = git_cmd(global_args);
     cmd.args(["worktree", "list"]);
     let result = exec_capture(&mut cmd).context("Failed to run git worktree list")?;
+
+    // Fall back to raw output on git failure — never silently filter and
+    // synthesize success when git itself errored.
+    if !result.success() {
+        eprintln!("FAILED: git worktree list");
+        let combined = result.combined();
+        if !result.stderr.trim().is_empty() {
+            eprintln!("{}", result.stderr);
+        }
+        timer.track(
+            "git worktree list",
+            "rtk git worktree",
+            &combined,
+            &combined,
+        );
+        return Ok(result.exit_code);
+    }
 
     let filtered = filter_worktree_list(&result.stdout);
     println!("{}", filtered);

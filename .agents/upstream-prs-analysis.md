@@ -36,7 +36,7 @@ Features that extend filtering/rewriting — aligned with our Context Zip missio
 | **#1677** | feat(curl): config-driven URL allowlist | medium | Security improvement, 6 files |
 | **#1697** | feat(skills): improve triage skills scalability | low | Skills improvement, 3 files |
 
-**Adoption order:** #1603 (isolated, 2 files) → #1673 (2 files) → #1634 → #1677.
+**Adoption order:** #1603 (isolated, 2 files) → #1673 (2 files) → #1697 (3 files) → #1634 → #1677.
 
 > #1578 deferred — upstream PR still open; will revisit when merged upstream.
 

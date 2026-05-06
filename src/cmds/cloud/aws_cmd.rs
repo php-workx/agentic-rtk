@@ -255,9 +255,20 @@ fn run_generic(subcommand: &str, args: &[String], verbose: u8, full_sub: &str) -
         return Ok(crate::core::utils::exit_code_from_output(&output, "aws"));
     }
 
+    let slug = format!("aws_{}", full_sub.replace(' ', "_"));
     let filtered = match json_cmd::filter_json_schema(&raw, JSON_COMPRESS_DEPTH) {
-        Ok((schema, _truncated)) => {
-            println!("{}", schema);
+        Ok((schema, truncated)) => {
+            // When schema elision drops keys/depth, force-tee raw payload so
+            // the LLM has a recovery path to the full output.
+            if truncated {
+                if let Some(hint) = force_tee_hint(&raw, &slug) {
+                    println!("{}\n{}", schema, hint);
+                } else {
+                    println!("{}", schema);
+                }
+            } else {
+                println!("{}", schema);
+            }
             schema
         }
         Err(_) => {

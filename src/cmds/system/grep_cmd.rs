@@ -46,8 +46,14 @@ pub fn run(
         rg_cmd.arg(arg);
     }
 
+    // PCRE2 patterns (lookbehind, atomic groups, etc.) only work with rg.
+    // Don't silently downgrade to grep when --pcre2 was requested — surface
+    // the rg failure instead so the user gets a clear error.
     let result = exec_capture(&mut rg_cmd)
-        .or_else(|_| {
+        .or_else(|err| {
+            if pcre2 {
+                return Err(err);
+            }
             let mut grep_cmd = resolved_command("grep");
             grep_cmd.args(["-rn", pattern, path]);
             exec_capture(&mut grep_cmd)

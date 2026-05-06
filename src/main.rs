@@ -2671,14 +2671,16 @@ fn is_operational_command(cmd: &Commands) -> bool {
 }
 
 /// Returns true for commands that implement JSON envelope output.
+///
+/// `Npx` only forwards `--json` for the `playwright` subcommand; other npx
+/// invocations (cowsay, vitest, etc.) emit plain text, so accepting `--json`
+/// for them would silently break the machine-readable contract.
 fn is_json_supported(cmd: &Commands) -> bool {
-    matches!(
-        cmd,
-        Commands::Vitest { .. }
-            | Commands::Jest { .. }
-            | Commands::Playwright { .. }
-            | Commands::Npx { .. }
-    )
+    match cmd {
+        Commands::Vitest { .. } | Commands::Jest { .. } | Commands::Playwright { .. } => true,
+        Commands::Npx { args } => matches!(args.first().map(String::as_str), Some("playwright")),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
