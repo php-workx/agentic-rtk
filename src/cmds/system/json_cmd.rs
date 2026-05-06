@@ -243,6 +243,7 @@ fn extract_schema(value: &Value, depth: usize, max_depth: usize, truncated: &mut
                 let mut parts = Vec::new();
                 for (i, key) in keys.iter().enumerate() {
                     if i >= 15 {
+                        *truncated = true;
                         parts.push(format!("… +{} more keys", keys.len() - i));
                         break;
                     }
