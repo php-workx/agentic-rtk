@@ -203,8 +203,15 @@ fn parse_ls_line(line: &str) -> Option<(char, String, u64, String)> {
 /// entries for "." (the directory itself) and ".." (its parent). These entries
 /// always appear in `ls -la` output and are skipped during parsing since they
 /// carry no meaningful content for token reduction.
+// FORK: Use exact last-token match instead of suffix check to avoid
+// misclassifying filenames like "report." or "archive.." as dotdirs.
 fn is_dotdir(line: &str) -> bool {
-    line.trim().ends_with('.') || line.trim().ends_with("..")
+    let trimmed = line.trim();
+    // Symlinks have " -> " — they're never dotdir entries
+    if trimmed.contains(" -> ") {
+        return false;
+    }
+    matches!(trimmed.split_whitespace().next_back(), Some(".") | Some(".."))
 }
 
 /// Convert an `ls`-style permission string (e.g. `-rw-r--r--`, `drwxr-xr-x`,

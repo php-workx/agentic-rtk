@@ -135,7 +135,16 @@ fn compact_json(value: &Value, depth: usize, max_depth: usize, truncated: &mut b
             // invalid output for inputs containing `"`, `\`, or `\n`.
             if s.chars().count() > STRING_CHARS_LIMIT {
                 *truncated = true;
-                let end = s.floor_char_boundary(STRING_CHARS_LIMIT - 1);
+                // FORK: Use char_indices() to correctly compute byte offset from
+                // character count. floor_char_boundary() expects a byte index, not a
+                // character count — passing STRING_CHARS_LIMIT (a char count) would
+                // over-truncate multibyte UTF-8 strings.
+                let keep_chars = STRING_CHARS_LIMIT - 1;
+                let end = s
+                    .char_indices()
+                    .nth(keep_chars)
+                    .map(|(idx, _)| idx)
+                    .unwrap_or_else(|| s.len());
                 let mut truncated_str = s[..end].to_string();
                 truncated_str.push('…');
                 Value::String(truncated_str).to_string()
