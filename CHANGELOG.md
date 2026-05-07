@@ -5,6 +5,39 @@ All notable changes to rtk (Rust Token Killer) will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.38.0-workx.3](https://github.com/php-workx/agentic-rtk/releases/tag/v0.38.0-workx.3) (2026-05-07)
+
+### Upstream Adopts
+
+* **tee:** keep head + tail when raw output exceeds max (upstream #1696)
+* **ls:** force LC_TIME=C / C locale for locale-independent dates (upstream #1689, #1647)
+* **git:** inject `--` for bare-word-with-extension paths (upstream #1679)
+* **hooks/claude:** omit permissionDecision under bypass mode (upstream #1648)
+* **filters:** remove max_lines cap from helm filter (upstream #1645)
+* **tee:** render absolute log path in format_hint (upstream #1657)
+* **discover:** wire xcodebuild into rewriter registry (upstream #1603)
+* **json:** single-line output with Unicode-aware truncation (upstream #1673)
+* **parser:** add `--json` global flag for vitest, jest, playwright (upstream #1634)
+* **curl:** config-driven URL allowlist for bypass schema-mode rewrite (upstream #1677)
+* **grep:** support `--pcre2` flag (upstream #1678)
+* **ls:** preserve permission info as octal (upstream #1675)
+* **learn:** drop parallel-tool-call cancellations (upstream #1662)
+* **gh:** passthrough `--help`/`-h` on pr subcommands (upstream #1661)
+* **rewrite:** pass `ls -O` / `-@` / `-e` through unchanged (upstream #1640)
+* **rewrite:** leave pipe groups raw end-to-end (upstream #1639)
+* **go:** pass through unrecognized go build output (upstream #1638, #1600)
+* **git:** distinguish stash push no-op from success (upstream #1636)
+* **git:** surface push rejection errors (upstream #1588)
+* **git:** fix stash status detection for all cases (upstream #1586)
+* **go:** fix `go test -bench` — don't inject `-json` (upstream #1610)
+* **hooks:** add correct copilot init command (upstream #1595)
+
+### Infrastructure
+
+* **fork:** adopt upstream-friendly practices — AGENTIC-RTK-FORK sentinels, rewrite registry, audit tooling ([604ebed](https://github.com/php-workx/agentic-rtk/commit/604ebed))
+* **docs:** add fork development guidelines to CLAUDE.md ([a540e6a](https://github.com/php-workx/agentic-rtk/commit/a540e6a))
+* **docs:** add upstream sync strategy for agents ([1c802e1](https://github.com/php-workx/agentic-rtk/commit/1c802e1))
+
 ## [0.38.0-workx.2](https://github.com/php-workx/agentic-rtk/releases/tag/v0.38.0-workx.2) (2026-05-04)
 
 ### Features
