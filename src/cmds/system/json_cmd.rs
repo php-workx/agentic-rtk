@@ -460,8 +460,8 @@ mod tests {
             payload.len(),
             output
         );
-        // FORK: upstream's floor_char_boundary may produce slightly fewer
-        // chars than STRING_CHARS_LIMIT for multibyte strings (byte-safe slice)
+        // floor_char_boundary may produce slightly fewer chars than
+        // STRING_CHARS_LIMIT for multibyte strings (byte-safe slice)
         assert!(
             s.chars().count() <= STRING_CHARS_LIMIT && s.chars().count() > 0,
             "Truncated string should be ≤{} chars, got {}: {}",
