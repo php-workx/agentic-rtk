@@ -27,7 +27,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **git:** surface in-progress state in compact `rtk git status` ([017d0f9](https://github.com/rtk-ai/rtk/commit/017d0f9ee6bb799717958d9f3fd3eee4b0e6ca3c))
 * **grep:** adjust the command to fall through if the output would already be as small as possible ([09e1c0a](https://github.com/rtk-ai/rtk/commit/09e1c0ad4b474631b8e058ce69ca2bbd46484c7f))
 * head/tail multi-file rewrite falls back to native command ([#1362](https://github.com/rtk-ai/rtk/issues/1362)) ([f75a10b](https://github.com/rtk-ai/rtk/commit/f75a10b1a2bd824814247a03bded76fa49ddf663))
-* **init-uninstall:** uninstall removes --claude-md artifacts on Windows ([d395f97](https://github.com/rtk-ai/rtk/commit/d395f975c3db7e1cbc825006091e1dcc3867844d))
 * **init-uninstall:** uninstall removes --claude-md artifacts on Windows ([aad0db8](https://github.com/rtk-ai/rtk/commit/aad0db8b5213bd0940ca05f684ecda87de0d93af))
 * **json:** expand char boundary truncation test ([7840030](https://github.com/rtk-ai/rtk/commit/784003055e85b5e6a51f69c2ce0b10662f1b36af))
 * **json:** use char boundary when truncating long string values ([533894a](https://github.com/rtk-ai/rtk/commit/533894a77ec5b8f7374547e994124bcf3a730f0b))

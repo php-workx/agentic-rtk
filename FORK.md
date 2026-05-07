@@ -107,8 +107,8 @@ When a new upstream version is released (e.g., v0.39.0), follow this process:
 ```bash
 git fetch upstream --tags
 gh release view vX.Y.Z --repo rtk-ai/rtk    # get release notes
-git log --oneline v<current>..vX.Y.Z          # count commits
-git diff --stat v<current>..vX.Y.Z           # scope of changes
+git log --oneline v<current>..v<target>          # count commits
+git diff --stat v<current>..v<target>           # scope of changes
 ```
 
 ### 2. Merge (not rebase)
@@ -142,7 +142,7 @@ After merge, check whether upstream accepted PRs the fork previously adopted.
 Duplicate code is a merge artifact that compiles but wastes tokens and confuses
 future contributors.
 
-```
+```text
 1. Extract upstream PR numbers from release notes
 2. Cross-reference against fork CHANGELOG "Upstream Adopts" entries
 3. For each overlap:
@@ -156,7 +156,7 @@ future contributors.
 ### 5. Verify
 
 ```bash
-cargo fmt --all && cargo clippy --all-targets && cargo test --all
+cargo fmt --all && cargo clippy --all-targets && cargo test --workspace
 ```
 
 All three must pass before committing. Zero clippy warnings, zero test failures.
