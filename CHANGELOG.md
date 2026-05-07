@@ -5,6 +5,37 @@ All notable changes to rtk (Rust Token Killer) will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.0](https://github.com/rtk-ai/rtk/compare/v0.38.0...v0.39.0) (2026-05-06)
+
+
+### Features
+
+* **cicd:** add auto next release parser ([bf24972](https://github.com/rtk-ai/rtk/commit/bf24972e7d463f0432b8315e3035e9eb13ff062f))
+* **cicd:** target develop branch ([63da7da](https://github.com/rtk-ai/rtk/commit/63da7dafd61b5f65115989aeda01f666a64457ff))
+
+
+### Bug Fixes
+
+* **cicd:** match ":" for body prefix to catch ([5987333](https://github.com/rtk-ai/rtk/commit/5987333209cd59c1e22f9e0b247ab390cb431dbf))
+* **cicd:** match allowed repo list in pr bodies ([b1233ab](https://github.com/rtk-ai/rtk/commit/b1233ab3fbc0927145d5c0f763725b098fc7dd99))
+* **curl:** gate force_tee_hint, extend JSON heuristic, avoid full-body alloc ([2ed53c7](https://github.com/rtk-ai/rtk/commit/2ed53c7fa26922860af20c445b39cbb66862f180))
+* **curl:** JSON passthrough + IsTerminal gate to prevent invalid JSON output ([02da3d0](https://github.com/rtk-ai/rtk/commit/02da3d070271f800731a94a3249f3feb9dd7c7b8)), closes [#1536](https://github.com/rtk-ai/rtk/issues/1536) [#1282](https://github.com/rtk-ai/rtk/issues/1282)
+* dotnet cmd test flakiness ([17ffe62](https://github.com/rtk-ai/rtk/commit/17ffe624d415f05ca4c29e97ca650594778231be))
+* **git:** address review feedback on status state surfacing ([316e65e](https://github.com/rtk-ai/rtk/commit/316e65ef5baa6b926725b8d9a08c8d2ab52c159d))
+* **git:** compact in-progress status state ([cff391e](https://github.com/rtk-ai/rtk/commit/cff391e50b5fa89ae83eed5fd4274c7c444d37f0))
+* **git:** drop state-hint extraction in compact status ([e91dee5](https://github.com/rtk-ai/rtk/commit/e91dee568bdcca0933b137edccc077db9ff006fa))
+* **git:** surface in-progress state in compact `rtk git status` ([017d0f9](https://github.com/rtk-ai/rtk/commit/017d0f9ee6bb799717958d9f3fd3eee4b0e6ca3c))
+* **grep:** adjust the command to fall through if the output would already be as small as possible ([09e1c0a](https://github.com/rtk-ai/rtk/commit/09e1c0ad4b474631b8e058ce69ca2bbd46484c7f))
+* head/tail multi-file rewrite falls back to native command ([#1362](https://github.com/rtk-ai/rtk/issues/1362)) ([f75a10b](https://github.com/rtk-ai/rtk/commit/f75a10b1a2bd824814247a03bded76fa49ddf663))
+* **init-uninstall:** uninstall removes --claude-md artifacts on Windows ([d395f97](https://github.com/rtk-ai/rtk/commit/d395f975c3db7e1cbc825006091e1dcc3867844d))
+* **init-uninstall:** uninstall removes --claude-md artifacts on Windows ([aad0db8](https://github.com/rtk-ai/rtk/commit/aad0db8b5213bd0940ca05f684ecda87de0d93af))
+* **json:** expand char boundary truncation test ([7840030](https://github.com/rtk-ai/rtk/commit/784003055e85b5e6a51f69c2ce0b10662f1b36af))
+* **json:** use char boundary when truncating long string values ([533894a](https://github.com/rtk-ai/rtk/commit/533894a77ec5b8f7374547e994124bcf3a730f0b))
+* **ls:** handle all file types (device, pipe, socket) in ls filter ([e456be1](https://github.com/rtk-ai/rtk/commit/e456be1c1674a32839694446504310a2c16ce7dd))
+* **ls:** handle device files (block, char, pipe, socket) in ls filter ([cac8ce7](https://github.com/rtk-ai/rtk/commit/cac8ce775b695c5837b36ea788ba6812bcae214d)), closes [#844](https://github.com/rtk-ai/rtk/issues/844)
+* **ls:** LC_ALL=C + fallback to raw on unrecognized locale ([bf6d4b2](https://github.com/rtk-ai/rtk/commit/bf6d4b2ea22f026d3ec4d909aef81156b0436509))
+* **pnpm:** install don't take a list of packages ([492aa76](https://github.com/rtk-ai/rtk/commit/492aa76ed3842549d2a453becbf2782caba765f1))
+
 ## [0.38.0-workx.3](https://github.com/php-workx/agentic-rtk/releases/tag/v0.38.0-workx.3) (2026-05-07)
 
 ### Upstream Adopts
@@ -70,7 +101,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Documentation
 
 * **release-schema:** Document dual-versioning system in `.agents/RELEASE_SCHEMA.md` and `.releaserc.yml` ([074e0c2](https://github.com/php-workx/agentic-rtk/commit/074e0c2))
-
 
 ## [0.38.0](https://github.com/rtk-ai/rtk/compare/v0.37.2...v0.38.0) (2026-04-29)
 
@@ -572,6 +602,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * **cargo clippy:** include actionable error details in compact output instead of summary-only counts ([#602](https://github.com/rtk-ai/rtk/issues/602))
 * **curl:** skip JSON schema replacement when schema is larger than original payload ([#297](https://github.com/rtk-ai/rtk/issues/297))
+* **init:** `rtk init -g --uninstall` now removes `<!-- rtk-instructions -->` block from CLAUDE.md ([#384](https://github.com/rtk-ai/rtk/issues/384))
 * **toml-dsl:** fix regex overmatch on `tofu-plan/init/validate/fmt` and `mix-format/compile` — add `(\s|$)` word boundary to prevent matching subcommands (e.g. `tofu planet`, `mix formats`) ([#349](https://github.com/rtk-ai/rtk/issues/349))
 * **toml-dsl:** remove 3 dead built-in filters (`docker-inspect`, `docker-compose-ps`, `pnpm-build`) — Clap routes these commands before `run_fallback`, so the TOML filters never fire ([#351](https://github.com/rtk-ai/rtk/issues/351))
 * **toml-dsl:** `uv-sync` — remove `Resolved` short-circuit; it fires before the package list is printed, hiding installed packages ([#386](https://github.com/rtk-ai/rtk/issues/386))
@@ -626,6 +657,7 @@ breakage, but future rule additions won't take effect until they migrate.
 
 * +48 regression tests covering all command categories: aws, psql, Python, Go, JS/TS,
   compound operators, sudo/env prefixes, registry invariants (607 total, was 559)
+* +5 tests for uninstall `--claude-md` artifact cleanup (614 total)
 
 ## [0.24.0](https://github.com/rtk-ai/rtk/compare/v0.23.0...v0.24.0) (2026-03-04)
 
