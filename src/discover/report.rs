@@ -1,5 +1,6 @@
 //! Data types for reporting which commands RTK can and cannot optimize.
 
+// FORK: Use centralized CURSOR_DIR constant instead of hardcoded ".cursor"
 use crate::hooks::constants::{CURSOR_DIR, HOOKS_SUBDIR, REWRITE_HOOK_FILE};
 use serde::Serialize;
 
@@ -170,6 +171,7 @@ pub fn format_text(report: &DiscoverReport, limit: usize, verbose: bool) -> Stri
 
     // Cursor note: check if Cursor hooks are installed
     if let Some(home) = dirs::home_dir() {
+        // FORK: Use centralized constants for Cursor hook path detection
         let cursor_hook = home
             .join(CURSOR_DIR)
             .join(HOOKS_SUBDIR)

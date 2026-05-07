@@ -309,8 +309,8 @@ pub fn split_on_operators(cmd: &str, stop_at_pipe: bool) -> Vec<&str> {
 }
 
 #[allow(dead_code)]
-// AGENTIC-RTK-FORK: Allow dead_code for fork-only usage (upstream uses #[cfg(test)]). See FORK.md.
-// END AGENTIC-RTK-FORK
+// FORK: Allow dead_code for fork-only usage (upstream uses #[cfg(test)]). See FORK.md.
+// END FORK
 pub fn strip_quotes(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     if chars.len() >= 2

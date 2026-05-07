@@ -5,6 +5,7 @@ use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 
+// FORK: gate regex import to tests-only to avoid dead-code warnings in prod
 #[cfg(test)]
 use regex::Regex;
 
@@ -87,7 +88,8 @@ impl<H: BlockHandler> StreamFilter for BlockStreamFilter<H> {
     }
 }
 
-#[cfg(test)] // available for command modules; currently used in tests only
+// FORK: test-only helper, gated behind #[cfg(test)] — not available in prod builds
+#[cfg(test)]
 pub struct RegexBlockFilter {
     start_re: Regex,
     skip_prefixes: Vec<String>,
@@ -95,6 +97,7 @@ pub struct RegexBlockFilter {
     block_count: usize,
 }
 
+// FORK: gate RegexBlockFilter impl to tests-only
 #[cfg(test)]
 impl RegexBlockFilter {
     #[allow(dead_code)]
@@ -121,6 +124,7 @@ impl RegexBlockFilter {
     }
 }
 
+// FORK: gate BlockHandler impl to tests-only
 #[cfg(test)]
 impl BlockHandler for RegexBlockFilter {
     fn should_skip(&mut self, line: &str) -> bool {
@@ -181,6 +185,7 @@ pub struct StreamResult {
 }
 
 impl StreamResult {
+    // FORK: gate success() to tests-only (was #[allow(dead_code)] in upstream)
     #[cfg(test)]
     pub fn success(&self) -> bool {
         self.exit_code == 0
