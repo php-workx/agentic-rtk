@@ -2,7 +2,58 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
+fn rtk_version() -> String {
+    let base = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_string());
+
+    // If building from an exact tag, keep the version clean for releases
+    let is_exact_tag = std::process::Command::new("git")
+        .args(["describe", "--exact-match", "--tags"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if is_exact_tag {
+        return base;
+    }
+
+    let hash = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    // `git status --porcelain` covers staged + unstaged + untracked changes;
+    // `git diff --quiet` only flagged unstaged tracked diffs.
+    let dirty = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .output()
+        .map(|o| o.status.success() && !o.stdout.is_empty())
+        .unwrap_or(false);
+
+    if hash.is_empty() {
+        if dirty {
+            format!("{}+dirty", base)
+        } else {
+            base
+        }
+    } else if dirty {
+        format!("{}+{}-dirty", base, hash)
+    } else {
+        format!("{}+{}", base, hash)
+    }
+}
+
 fn main() {
+    println!("cargo:rustc-env=RTK_VERSION={}", rtk_version());
+    // RTK_VERSION depends on git state; rerun when commits/branches/index move
+    // so cargo doesn't cache a stale version across checkouts or new commits.
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/index");
+    println!("cargo:rerun-if-changed=.git/packed-refs");
+    println!("cargo:rerun-if-changed=.git/refs");
+
     #[cfg(windows)]
     {
         // Clap + the full command graph can exceed the default 1 MiB Windows

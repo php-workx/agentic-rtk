@@ -1,13 +1,13 @@
 //! Filters git output — log, status, diff, and more — keeping just the essential info.
 
 use crate::core::config;
-use crate::core::stream::exec_capture;
+use crate::core::stream::{exec_capture, CaptureResult};
 use crate::core::tracking;
 use crate::core::utils::{exit_code_from_output, exit_code_from_status, resolved_command};
-use std::process::Stdio;
 use anyhow::{Context, Result};
 use std::ffi::OsString;
 use std::process::Command;
+use std::process::Stdio;
 
 #[derive(Debug, Clone)]
 pub enum GitCommand {
@@ -70,8 +70,24 @@ pub fn run(
 /// Without the `--` separator git may treat an unambiguous path as a revision and
 /// emit "fatal: ambiguous argument".  We re-insert `--` before the first path-like
 /// argument; see `normalize_diff_args_impl` for the detection rules.
-fn normalize_diff_args(args: &[String]) -> Vec<String> {
-    normalize_diff_args_impl(args, |p| std::path::Path::new(p).exists())
+fn normalize_diff_args(args: &[String], repo_root: Option<&std::path::Path>) -> Vec<String> {
+    normalize_diff_args_impl(args, |p| {
+        if let Some(root) = repo_root {
+            let joined = root.join(p);
+            if joined.exists() {
+                return true;
+            }
+            // Check if tracked in git (covers deleted-but-tracked files)
+            let output = std::process::Command::new("git")
+                .args(["ls-files", "--error-unmatch", p])
+                .current_dir(root)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .output();
+            return output.map(|o| o.status.success()).unwrap_or(false);
+        }
+        std::path::Path::new(p).exists()
+    })
 }
 
 /// Testable core of `normalize_diff_args` — accepts an injectable filesystem existence checker.
@@ -80,8 +96,16 @@ fn normalize_diff_args(args: &[String]) -> Vec<String> {
 /// 1. Explicit path prefixes (`.`, `~`) → always a path, no filesystem check needed.
 /// 2. Contains path separator (`/`, `\`) → use `path_exists` to distinguish branch names
 ///    (e.g. `feature/auth`) from real paths (e.g. `src/main.rs`).
-/// 3. Bare word with no separator → never a path (avoids injecting `--` when a file
-///    happens to share a name with a branch or ref, e.g. a file named `main`).
+/// 3. Bare word with a mid-string `.` (looks like a filename with extension, e.g.
+///    `package.json`, `playwright.config.ts`) → use `path_exists` to distinguish
+///    refs/tags (e.g. `v1.2.3`) from real files. Required for issue #1669: when a
+///    user-passed `--` is dropped by clap and the file list mixes bare-word-with-
+///    extension args (`package.json`) with explicit-path args (`.harness/foo.yaml`),
+///    rule 1 alone places `--` after the bare-word-with-extension args, leaving them
+///    misinterpreted as revisions.
+/// 4. Bare word with no separator and no `.` → never a path (avoids injecting `--`
+///    when a file happens to share a name with a branch or ref, e.g. a file named
+///    `main`).
 fn normalize_diff_args_impl<F>(args: &[String], path_exists: F) -> Vec<String>
 where
     F: Fn(&str) -> bool,
@@ -103,7 +127,14 @@ where
         if arg.contains('/') || arg.contains('\\') {
             return path_exists(arg);
         }
-        // Bare word (no separator, no special prefix) — never inject `--`
+        // Bare word with mid-string `.` (looks like filename with extension) —
+        // use filesystem check to distinguish refs/tags (v1.2.3) from real
+        // files (package.json). The `.` must not be at position 0 because
+        // that prefix is already handled by rule 1 (.gitignore as dotfile).
+        if arg.find('.').is_some_and(|i| i > 0) {
+            return path_exists(arg);
+        }
+        // Plain bare word (no separator, no `.`, no special prefix) — never inject `--`
         // This avoids misidentifying a ref/branch as a path even if a same-named
         // file happens to exist on disk.
         false
@@ -127,8 +158,28 @@ fn run_diff(
 ) -> Result<i32> {
     let timer = tracking::TimedExecution::start();
 
+    // Compute repo root for repo-aware path existence checks. Honor global
+    // args (`-C <dir>`, `--git-dir`, etc.) so the rev-parse runs against the
+    // same repo as the user's diff command, not the process CWD.
+    let repo_root = {
+        let mut repo_cmd = git_cmd(global_args);
+        repo_cmd.args(["rev-parse", "--show-toplevel"]);
+        repo_cmd.output()
+    }
+    .ok()
+    .and_then(|out| {
+        if out.status.success() {
+            String::from_utf8(out.stdout)
+                .ok()
+                .map(|s| std::path::PathBuf::from(s.trim()))
+        } else {
+            None
+        }
+    });
+    let repo_root_ref = repo_root.as_deref();
+
     // Re-insert `--` when clap's trailing_var_arg consumed it (issue #1215)
-    let args = &normalize_diff_args(args);
+    let args = &normalize_diff_args(args, repo_root_ref);
 
     // Check if user wants stat output
     let wants_stat = args
@@ -883,8 +934,7 @@ fn run_add(args: &[String], verbose: u8, global_args: &[String]) -> Result<i32> 
         // Count what was added
         let mut stat_cmd = git_cmd(global_args);
         stat_cmd.args(["diff", "--cached", "--stat", "--shortstat"]);
-        let stat_result =
-            exec_capture(&mut stat_cmd).context("Failed to check staged files")?;
+        let stat_result = exec_capture(&mut stat_cmd).context("Failed to check staged files")?;
 
         let compact = if stat_result.stdout.trim().is_empty() {
             "ok (nothing to add)".to_string()
@@ -1003,13 +1053,16 @@ fn run_push(args: &[String], verbose: u8, global_args: &[String]) -> Result<i32>
         cmd.arg(arg);
     }
 
-    let output = cmd.stdin(Stdio::inherit()).output().context("Failed to run git push")?;
+    let output = cmd
+        .stdin(Stdio::inherit())
+        .output()
+        .context("Failed to run git push")?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let raw = format!("{}{}", stdout, stderr);
 
-    if output.status.success() {
+    if output.status.success() && !push_output_has_rejection(&stderr) {
         let compact = if stderr.contains("Everything up-to-date") {
             "ok (up-to-date)".to_string()
         } else {
@@ -1046,10 +1099,30 @@ fn run_push(args: &[String], verbose: u8, global_args: &[String]) -> Result<i32>
         if !stdout.trim().is_empty() {
             eprintln!("{}", stdout);
         }
-        return Ok(exit_code_from_output(&output, "git push"));
+        let exit_code = push_failure_exit_code(
+            output.status.success(),
+            exit_code_from_output(&output, "git push"),
+        );
+        return Ok(exit_code);
     }
 
     Ok(0)
+}
+
+fn push_output_has_rejection(stderr: &str) -> bool {
+    let stderr_lower = stderr.to_ascii_lowercase();
+    stderr.contains("! [remote rejected]")
+        || stderr_lower.contains("remote: error:")
+        || stderr_lower.contains("push declined")
+        || stderr_lower.contains("gh013")
+}
+
+fn push_failure_exit_code(status_success: bool, git_exit_code: i32) -> i32 {
+    if status_success {
+        1
+    } else {
+        git_exit_code
+    }
 }
 
 fn run_pull(args: &[String], verbose: u8, global_args: &[String]) -> Result<i32> {
@@ -1224,11 +1297,7 @@ fn run_branch(args: &[String], verbose: u8, global_args: &[String]) -> Result<i3
         let result = exec_capture(&mut cmd).context("Failed to run git branch")?;
         let combined = result.combined();
 
-        let msg = if result.success() {
-            "ok"
-        } else {
-            &combined
-        };
+        let msg = if result.success() { "ok" } else { &combined };
 
         timer.track(
             &format!("git branch {}", args.join(" ")),
@@ -1391,6 +1460,34 @@ fn run_fetch(args: &[String], verbose: u8, global_args: &[String]) -> Result<i32
     Ok(0)
 }
 
+/// Format status message for stash operations.
+/// - `create`: returns the raw object id git emitted (callers consume it).
+/// - `push`/`save` (or any pathspec-prefixed push): checks for "No local changes".
+/// - Other subcommands: "ok stash <subcommand>".
+fn format_stash_message(subcommand: Option<&str>, result: &CaptureResult) -> String {
+    match subcommand {
+        // `git stash create` prints a SHA-1 on success that callers can stash@{...}
+        // against. Preserve it verbatim instead of replacing with "ok stash create".
+        Some("create") => {
+            let trimmed = result.stdout.trim();
+            if trimmed.is_empty() {
+                "ok (nothing to stash)".to_string()
+            } else {
+                trimmed.to_string()
+            }
+        }
+        None | Some("push") | Some("save") => {
+            // Create operations check for "no local changes"
+            if stash_push_is_noop(&result.combined()) {
+                "ok (nothing to stash)".to_string()
+            } else {
+                "ok stashed".to_string()
+            }
+        }
+        Some(sub) => format!("ok stash {}", sub),
+    }
+}
+
 fn run_stash(
     subcommand: Option<&str>,
     args: &[String],
@@ -1407,8 +1504,24 @@ fn run_stash(
         Some("list") => {
             let mut cmd = git_cmd(global_args);
             cmd.args(["stash", "list"]);
-            let result =
-                exec_capture(&mut cmd).context("Failed to run git stash list")?;
+            let result = exec_capture(&mut cmd).context("Failed to run git stash list")?;
+
+            // Fall back to raw output on git failure — never synthesize a
+            // success message ("No stashes") when git itself errored.
+            if !result.success() {
+                eprintln!("FAILED: git stash list");
+                let combined = result.combined();
+                if !result.stderr.trim().is_empty() {
+                    eprintln!("{}", result.stderr);
+                }
+                timer.track(
+                    "git stash list",
+                    "rtk git stash list",
+                    &combined,
+                    &combined,
+                );
+                return Ok(result.exit_code);
+            }
 
             if result.stdout.trim().is_empty() {
                 let msg = "No stashes";
@@ -1432,8 +1545,24 @@ fn run_stash(
             for arg in args {
                 cmd.arg(arg);
             }
-            let result =
-                exec_capture(&mut cmd).context("Failed to run git stash show")?;
+            let result = exec_capture(&mut cmd).context("Failed to run git stash show")?;
+
+            // Fall back to raw output on git failure — never synthesize
+            // "Empty stash" when git itself errored.
+            if !result.success() {
+                eprintln!("FAILED: git stash show");
+                let combined = result.combined();
+                if !result.stderr.trim().is_empty() {
+                    eprintln!("{}", result.stderr);
+                }
+                timer.track(
+                    "git stash show",
+                    "rtk git stash show",
+                    &combined,
+                    &combined,
+                );
+                return Ok(result.exit_code);
+            }
 
             let filtered = if result.stdout.trim().is_empty() {
                 let msg = "Empty stash";
@@ -1452,7 +1581,8 @@ fn run_stash(
                 &filtered,
             );
         }
-        Some("pop") | Some("apply") | Some("drop") | Some("push") => {
+        Some("apply") | Some("branch") | Some("clear") | Some("create") | Some("drop")
+        | Some("export") | Some("import") | Some("pop") | Some("store") => {
             let sub = subcommand.unwrap();
             let mut cmd = git_cmd(global_args);
             cmd.args(["stash", sub]);
@@ -1463,7 +1593,7 @@ fn run_stash(
             let combined = result.combined();
 
             let msg = if result.success() {
-                let msg = format!("ok stash {}", sub);
+                let msg = format_stash_message(subcommand, &result);
                 println!("{}", msg);
                 msg
             } else {
@@ -1485,10 +1615,19 @@ fn run_stash(
                 return Ok(result.exit_code);
             }
         }
-        Some(sub) => {
-            // Unrecognized subcommand: passthrough to git stash <sub> [args]
+        // Default: "git stash [push] [--] [<pathspec>...]" or "git stash save [<message>]"
+        Some(_) | None => {
+            let (sub, arg) = match subcommand {
+                Some("save") => ("save", None),
+                Some("push") => ("push", None),
+                Some(s) => ("push", Some(s)),
+                None => ("push", None),
+            };
             let mut cmd = git_cmd(global_args);
             cmd.args(["stash", sub]);
+            if let Some(arg) = arg {
+                cmd.arg(arg);
+            }
             for arg in args {
                 cmd.arg(arg);
             }
@@ -1496,7 +1635,7 @@ fn run_stash(
             let combined = result.combined();
 
             let msg = if result.success() {
-                let msg = format!("ok stash {}", sub);
+                let msg = format_stash_message(subcommand, &result);
                 println!("{}", msg);
                 msg
             } else {
@@ -1513,40 +1652,6 @@ fn run_stash(
                 &combined,
                 &msg,
             );
-
-            if !result.success() {
-                return Ok(result.exit_code);
-            }
-        }
-        None => {
-            // Default: git stash (push)
-            let mut cmd = git_cmd(global_args);
-            cmd.arg("stash");
-            for arg in args {
-                cmd.arg(arg);
-            }
-            let result = exec_capture(&mut cmd).context("Failed to run git stash")?;
-            let combined = result.combined();
-
-            let msg = if result.success() {
-                if result.stdout.contains("No local changes") {
-                    let msg = "ok (nothing to stash)";
-                    println!("{}", msg);
-                    msg.to_string()
-                } else {
-                    let msg = "ok stashed";
-                    println!("{}", msg);
-                    msg.to_string()
-                }
-            } else {
-                eprintln!("FAILED: git stash");
-                if !result.stderr.trim().is_empty() {
-                    eprintln!("{}", result.stderr);
-                }
-                combined.clone()
-            };
-
-            timer.track("git stash", "rtk git stash", &combined, &msg);
 
             if !result.success() {
                 return Ok(result.exit_code);
@@ -1555,6 +1660,13 @@ fn run_stash(
     }
 
     Ok(0)
+}
+
+/// Detect the "git stash push" no-op case where git exits 0 but did not
+/// actually create a stash entry. Covers both an entirely clean tree and
+/// pathspec-restricted invocations whose pathspecs matched nothing.
+fn stash_push_is_noop(combined: &str) -> bool {
+    combined.contains("No local changes to save")
 }
 
 fn filter_stash_list(output: &str) -> String {
@@ -1599,11 +1711,7 @@ fn run_worktree(args: &[String], verbose: u8, global_args: &[String]) -> Result<
         let result = exec_capture(&mut cmd).context("Failed to run git worktree")?;
         let combined = result.combined();
 
-        let msg = if result.success() {
-            "ok"
-        } else {
-            &combined
-        };
+        let msg = if result.success() { "ok" } else { &combined };
 
         timer.track(
             &format!("git worktree {}", args.join(" ")),
@@ -1627,8 +1735,24 @@ fn run_worktree(args: &[String], verbose: u8, global_args: &[String]) -> Result<
     // Default: list mode
     let mut cmd = git_cmd(global_args);
     cmd.args(["worktree", "list"]);
-    let result =
-        exec_capture(&mut cmd).context("Failed to run git worktree list")?;
+    let result = exec_capture(&mut cmd).context("Failed to run git worktree list")?;
+
+    // Fall back to raw output on git failure — never silently filter and
+    // synthesize success when git itself errored.
+    if !result.success() {
+        eprintln!("FAILED: git worktree list");
+        let combined = result.combined();
+        if !result.stderr.trim().is_empty() {
+            eprintln!("{}", result.stderr);
+        }
+        timer.track(
+            "git worktree list",
+            "rtk git worktree",
+            &combined,
+            &combined,
+        );
+        return Ok(result.exit_code);
+    }
 
     let filtered = filter_worktree_list(&result.stdout);
     println!("{}", filtered);
@@ -1866,7 +1990,11 @@ mod tests {
         let normalized = normalize_diff_args_impl(&args, exists_mock(&["src/foo.rs"]));
         assert_eq!(
             normalized,
-            vec!["HEAD".to_string(), "--".to_string(), "src/foo.rs".to_string()]
+            vec![
+                "HEAD".to_string(),
+                "--".to_string(),
+                "src/foo.rs".to_string()
+            ]
         );
     }
 
@@ -1877,7 +2005,11 @@ mod tests {
         let normalized = normalize_diff_args_impl(&args, exists_mock(&["src/foo.rs"]));
         assert_eq!(
             normalized,
-            vec!["--cached".to_string(), "--".to_string(), "src/foo.rs".to_string()]
+            vec![
+                "--cached".to_string(),
+                "--".to_string(),
+                "src/foo.rs".to_string()
+            ]
         );
     }
 
@@ -1893,10 +2025,7 @@ mod tests {
     fn test_normalize_diff_args_dotfile_is_path() {
         let args = vec![".gitignore".to_string()];
         let normalized = normalize_diff_args_impl(&args, exists_mock(&[".gitignore"]));
-        assert_eq!(
-            normalized,
-            vec!["--".to_string(), ".gitignore".to_string()]
-        );
+        assert_eq!(normalized, vec!["--".to_string(), ".gitignore".to_string()]);
     }
 
     /// A bare ref (HEAD) that doesn't exist as a file → no injection.
@@ -1943,6 +2072,122 @@ mod tests {
         );
     }
 
+    /// Issue #1669: bare-word-with-extension that exists as a file → inject `--`.
+    /// `package.json` looks like a filename, not a ref. Filesystem check confirms.
+    #[test]
+    fn test_normalize_diff_args_bare_word_with_extension_treated_as_path() {
+        let args = vec!["package.json".to_string()];
+        let normalized = normalize_diff_args_impl(&args, exists_mock(&["package.json"]));
+        assert_eq!(
+            normalized,
+            vec!["--".to_string(), "package.json".to_string()],
+            "bare word with extension that exists on disk must trigger -- injection"
+        );
+    }
+
+    /// Bare-word-with-extension that does NOT exist as a file → no injection.
+    /// `v1.2.3` is a typical version tag pattern; without filesystem evidence it
+    /// must remain a ref candidate.
+    #[test]
+    fn test_normalize_diff_args_bare_word_with_extension_no_injection_when_not_file() {
+        let args = vec!["v1.2.3".to_string()];
+        assert_eq!(
+            normalize_diff_args_impl(&args, exists_mock(&[])),
+            args,
+            "bare word with dots that doesn't exist on disk must remain a ref candidate"
+        );
+    }
+
+    /// Issue #1669 reporter's exact case: clap dropped `--` and the arg list mixes
+    /// bare-word-with-extension files (`package.json`, `playwright.config.ts`) with
+    /// an explicit-path file (`.harness/e2e_pipeline.yaml`) and slash-path files.
+    /// `--` must be injected at index 0, before any path-like arg.
+    #[test]
+    fn test_normalize_diff_args_mixed_bare_extension_and_explicit_path() {
+        let args = vec![
+            "package.json".to_string(),
+            "playwright.config.ts".to_string(),
+            ".harness/e2e_pipeline.yaml".to_string(),
+            "e2e-tests/config/loadEnv.ts".to_string(),
+            "e2e-tests/config/test.env".to_string(),
+        ];
+        let normalized = normalize_diff_args_impl(
+            &args,
+            exists_mock(&[
+                "package.json",
+                "playwright.config.ts",
+                ".harness/e2e_pipeline.yaml",
+                "e2e-tests/config/loadEnv.ts",
+                "e2e-tests/config/test.env",
+            ]),
+        );
+        assert_eq!(
+            normalized,
+            vec![
+                "--".to_string(),
+                "package.json".to_string(),
+                "playwright.config.ts".to_string(),
+                ".harness/e2e_pipeline.yaml".to_string(),
+                "e2e-tests/config/loadEnv.ts".to_string(),
+                "e2e-tests/config/test.env".to_string(),
+            ],
+            "-- must be injected at the leading bare-word-with-extension, not the first explicit path"
+        );
+    }
+
+    /// Ref before bare-word-with-extension file: ["HEAD", "Cargo.toml"] → inject after HEAD.
+    #[test]
+    fn test_normalize_diff_args_ref_before_bare_word_extension() {
+        let args = vec!["HEAD".to_string(), "Cargo.toml".to_string()];
+        let normalized = normalize_diff_args_impl(&args, exists_mock(&["Cargo.toml"]));
+        assert_eq!(
+            normalized,
+            vec!["HEAD".to_string(), "--".to_string(), "Cargo.toml".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_push_output_has_rejection_for_github_ruleset() {
+        let stderr = "\
+remote: error: GH013: Repository rule violations found for refs/heads/alpha.
+remote: - Changes must be made through a pull request.
+To https://github.com/example/repo.git
+ ! [remote rejected] alpha -> alpha (push declined due to repository rule violations)
+error: failed to push some refs to 'https://github.com/example/repo.git'
+";
+        assert!(push_output_has_rejection(stderr));
+    }
+
+    #[test]
+    fn test_push_output_has_rejection_for_remote_error() {
+        let stderr = "remote: error: branch is protected\nEverything up-to-date\n";
+        assert!(push_output_has_rejection(stderr));
+    }
+
+    #[test]
+    fn test_push_output_has_rejection_ignores_normal_up_to_date() {
+        assert!(!push_output_has_rejection("Everything up-to-date\n"));
+    }
+
+    #[test]
+    fn test_push_output_has_rejection_ignores_normal_push() {
+        let stderr = "\
+To https://github.com/example/repo.git
+   1234567..89abcde  feature -> feature
+";
+        assert!(!push_output_has_rejection(stderr));
+    }
+
+    #[test]
+    fn test_push_failure_exit_code_for_rejected_success_status() {
+        assert_eq!(push_failure_exit_code(true, 0), 1);
+    }
+
+    #[test]
+    fn test_push_failure_exit_code_preserves_git_failure_status() {
+        assert_eq!(push_failure_exit_code(false, 128), 128);
+    }
+
     #[test]
     fn test_is_blob_show_arg() {
         assert!(is_blob_show_arg("develop:modules/pairs_backtest.py"));
@@ -1979,7 +2224,11 @@ mod tests {
         let result = filter_branch_output(output);
         assert!(result.contains("* main"));
         assert!(result.contains("develop"));
-        assert!(result.contains("feature-x"), "origin branch shown: {}", result);
+        assert!(
+            result.contains("feature-x"),
+            "origin branch shown: {}",
+            result
+        );
         assert!(
             result.contains("release-v3"),
             "upstream branch shown: {}",
@@ -2002,6 +2251,25 @@ mod tests {
             main_count,
             result
         );
+    }
+
+    #[test]
+    fn test_stash_push_is_noop_detects_no_local_changes() {
+        // Real `git stash push` output on a clean tree: stdout-only, exit 0.
+        assert!(stash_push_is_noop("No local changes to save\n"));
+        // Same message can appear when restricted by a pathspec that matched nothing.
+        assert!(stash_push_is_noop(
+            "error: pathspec 'missing.txt' did not match any file(s) known to git\nNo local changes to save\n"
+        ));
+    }
+
+    #[test]
+    fn test_stash_push_is_noop_negative_for_real_stash() {
+        // A successful stash creation does not contain the no-op marker.
+        assert!(!stash_push_is_noop(
+            "Saved working directory and index state WIP on main: abc1234 fix login\n"
+        ));
+        assert!(!stash_push_is_noop(""));
     }
 
     #[test]
@@ -2601,5 +2869,17 @@ no changes added to commit (use "git add" and/or "git commit -a")
             "Expected '+3 lines omitted' when 6 body lines truncated to 3, got:\n{}",
             result
         );
+    }    /// Repo-root-aware path resolution: the impl passes the original arg
+    /// unchanged to the checker; production callers resolve repo_root first.
+    #[test]
+    fn test_normalize_diff_args_resolves_relative_to_repo_root() {
+        let args = vec!["package.json".to_string()];
+        let normalized = normalize_diff_args_impl(&args, |p| p == "package.json");
+        assert_eq!(
+            normalized,
+            vec!["--".to_string(), "package.json".to_string()],
+            "checker receives the original arg unchanged; production caller resolves repo root"
+        );
     }
+
 }

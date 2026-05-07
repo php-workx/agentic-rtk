@@ -435,12 +435,55 @@ fn strip_trailing_redirects(cmd: &str) -> (&str, &str) {
     (cmd_part, redir_part)
 }
 
+/// Optional knobs for `rewrite_command_with_options`. Default values reproduce
+/// the historical behavior of `rewrite_command(cmd, excluded)`.
+#[derive(Debug, Default, Clone)]
+pub struct RewriteOptions {
+    /// URL substring markers that opt-out `curl` invocations from being
+    /// rewritten to `rtk curl … | rtk json --schema`. See
+    /// `crate::core::config::CurlConfig::bypass_url_markers`.
+    pub curl_bypass_url_markers: Vec<String>,
+}
+
 /// Returns `None` if the command is unsupported or ignored (hook should pass through).
 ///
 /// Handles compound commands (`&&`, `||`, `;`) by rewriting each segment independently.
-/// For pipes (`|`), only rewrites the left-hand command (pipe targets stay raw),
-/// but continues rewriting segments after subsequent `&&`/`||`/`;` operators.
+/// For pipes (`|`), leaves the entire pipe group raw end-to-end (rtk's grouped
+/// output format breaks pipe consumers like `xargs`), but continues rewriting
+/// segments after subsequent `&&`/`||`/`;` operators.
+///
+/// Reads `[curl] bypass_url_markers` from `config.toml` to decide whether a
+/// `curl` segment should be passed through unchanged. For explicit control
+/// over that list (e.g. in tests), use `rewrite_command_with_options`.
 pub fn rewrite_command(cmd: &str, excluded: &[String]) -> Option<String> {
+    // Surface the load error before falling back to defaults so a broken
+    // config doesn't silently re-enable curl rewrites for endpoints the
+    // user explicitly opted out of.
+    let opts = match crate::core::config::Config::load() {
+        Ok(config) => RewriteOptions {
+            curl_bypass_url_markers: config.curl.bypass_url_markers,
+        },
+        Err(err) => {
+            eprintln!(
+                "[rtk] warning: failed to load curl bypass markers (using defaults): {}",
+                err
+            );
+            RewriteOptions::default()
+        }
+    };
+    rewrite_command_with_options(cmd, excluded, &opts)
+}
+
+/// Same as `rewrite_command`, but lets the caller supply `RewriteOptions`
+/// directly instead of reading from the on-disk config. Tests use this to
+/// pin a specific `curl_bypass_url_markers` set without touching the user's
+/// config file; production callers that already have config in hand can
+/// avoid a second `Config::load()` round-trip.
+pub fn rewrite_command_with_options(
+    cmd: &str,
+    excluded: &[String],
+    opts: &RewriteOptions,
+) -> Option<String> {
     let trimmed = cmd.trim();
     if trimmed.is_empty() {
         return None;
@@ -464,11 +507,15 @@ pub fn rewrite_command(cmd: &str, excluded: &[String]) -> Option<String> {
         return Some(trimmed.to_string());
     }
 
-    rewrite_compound(trimmed, &compiled)
+    rewrite_compound(trimmed, &compiled, &opts.curl_bypass_url_markers)
 }
 
 /// Rewrite a compound command (with `&&`, `||`, `;`, `|`) by rewriting each segment.
-fn rewrite_compound(cmd: &str, excluded: &[ExcludePattern]) -> Option<String> {
+fn rewrite_compound(
+    cmd: &str,
+    excluded: &[ExcludePattern],
+    curl_bypass: &[String],
+) -> Option<String> {
     let tokens = tokenize(cmd);
     let mut result = String::with_capacity(cmd.len() + 32);
     let mut any_changed = false;
@@ -481,7 +528,8 @@ fn rewrite_compound(cmd: &str, excluded: &[ExcludePattern]) -> Option<String> {
         match tok.kind {
             TokenKind::Operator => {
                 let seg = cmd[seg_start..tok.offset].trim();
-                let rewritten = rewrite_segment(seg, excluded).unwrap_or_else(|| seg.to_string());
+                let rewritten =
+                    rewrite_segment(seg, excluded, curl_bypass).unwrap_or_else(|| seg.to_string());
                 if rewritten != seg {
                     any_changed = true;
                 }
@@ -503,22 +551,15 @@ fn rewrite_compound(cmd: &str, excluded: &[ExcludePattern]) -> Option<String> {
                 }
             }
             TokenKind::Pipe => {
+                // Never rewrite the left-hand side of a pipe (#1560). RTK
+                // filters reformat output (compress, group, drop columns) and
+                // can silently break downstream consumers like grep, awk, jq,
+                // wc — see the `ps aux | grep python | grep -v grep` repro,
+                // and the older find/fd carve-outs that motivated #439. The
+                // safest behavior across the whole filter set is to leave
+                // every pipe group raw end-to-end.
                 let seg = cmd[seg_start..tok.offset].trim();
-                let is_pipe_incompatible = seg.starts_with("find ")
-                    || seg == "find"
-                    || seg.starts_with("fd ")
-                    || seg == "fd";
-                let rewritten = if is_pipe_incompatible {
-                    seg.to_string()
-                } else if is_cat_segment(seg) {
-                    rewrite_cat_plain_read(seg, excluded).unwrap_or_else(|| seg.to_string())
-                } else {
-                    rewrite_segment(seg, excluded).unwrap_or_else(|| seg.to_string())
-                };
-                if rewritten != seg {
-                    any_changed = true;
-                }
-                result.push_str(&rewritten);
+                result.push_str(seg);
 
                 let pipe_group_end = tokens.iter().find(|t| {
                     t.offset > tok.offset
@@ -541,7 +582,8 @@ fn rewrite_compound(cmd: &str, excluded: &[ExcludePattern]) -> Option<String> {
             }
             TokenKind::Shellism if tok.value == "&" => {
                 let seg = cmd[seg_start..tok.offset].trim();
-                let rewritten = rewrite_segment(seg, excluded).unwrap_or_else(|| seg.to_string());
+                let rewritten =
+                    rewrite_segment(seg, excluded, curl_bypass).unwrap_or_else(|| seg.to_string());
                 if rewritten != seg {
                     any_changed = true;
                 }
@@ -557,7 +599,7 @@ fn rewrite_compound(cmd: &str, excluded: &[ExcludePattern]) -> Option<String> {
     }
 
     let seg = cmd[seg_start..].trim();
-    let rewritten = rewrite_segment(seg, excluded).unwrap_or_else(|| seg.to_string());
+    let rewritten = rewrite_segment(seg, excluded, curl_bypass).unwrap_or_else(|| seg.to_string());
     if rewritten != seg {
         any_changed = true;
     }
@@ -718,7 +760,23 @@ fn is_whitespace_safe_source_file(file: &str) -> bool {
     let path = std::path::Path::new(file);
     matches!(
         path.extension().and_then(|ext| ext.to_str()),
-        Some("rs" | "js" | "ts" | "tsx" | "go" | "java" | "c" | "cpp" | "rb" | "py" | "kt" | "swift" | "sh" | "json" | "yaml" | "yml")
+        Some(
+            "rs" | "js"
+                | "ts"
+                | "tsx"
+                | "go"
+                | "java"
+                | "c"
+                | "cpp"
+                | "rb"
+                | "py"
+                | "kt"
+                | "swift"
+                | "sh"
+                | "json"
+                | "yaml"
+                | "yml"
+        )
     )
 }
 
@@ -726,6 +784,7 @@ fn starts_with_command_word(cmd: &str, word: &str) -> bool {
     cmd == word || cmd.starts_with(&format!("{word} "))
 }
 
+#[allow(dead_code)]
 fn is_cat_segment(seg: &str) -> bool {
     let stripped = ENV_PREFIX.replace(seg.trim(), "");
     starts_with_command_word(stripped.trim(), "cat")
@@ -737,7 +796,7 @@ struct CatParseResult<'a> {
     line_numbers: bool,
 }
 
-fn parse_cat_command(cmd_clean: &str) -> Option<CatParseResult> {
+fn parse_cat_command(cmd_clean: &str) -> Option<CatParseResult<'_>> {
     let parsed = tokenize(cmd_clean);
     let words = shell_split(cmd_clean);
     if words.first().map(String::as_str) != Some("cat") {
@@ -775,6 +834,7 @@ fn parse_cat_command(cmd_clean: &str) -> Option<CatParseResult> {
     })
 }
 
+#[allow(dead_code)]
 fn rewrite_cat_plain_read(seg: &str, excluded: &[ExcludePattern]) -> Option<String> {
     let (cmd_part, redirect_suffix) = strip_trailing_redirects(seg.trim());
     if !redirect_suffix.is_empty() {
@@ -799,7 +859,12 @@ fn rewrite_cat_plain_read(seg: &str, excluded: &[ExcludePattern]) -> Option<Stri
     } else {
         "rtk read"
     };
-    Some(format_rewrite(env_prefix, command, result.files_segment, ""))
+    Some(format_rewrite(
+        env_prefix,
+        command,
+        result.files_segment,
+        "",
+    ))
 }
 
 fn format_rewrite(env_prefix: &str, rtk_cmd: &str, rest: &str, redirect_suffix: &str) -> String {
@@ -852,8 +917,12 @@ fn compile_exclude_patterns(patterns: &[String]) -> Vec<ExcludePattern> {
         .collect()
 }
 
-fn rewrite_segment(seg: &str, excluded: &[ExcludePattern]) -> Option<String> {
-    rewrite_segment_inner(seg, excluded, 0)
+fn rewrite_segment(
+    seg: &str,
+    excluded: &[ExcludePattern],
+    curl_bypass: &[String],
+) -> Option<String> {
+    rewrite_segment_inner(seg, excluded, curl_bypass, 0)
 }
 
 fn is_excluded(cmd: &str, excluded: &[ExcludePattern]) -> bool {
@@ -863,7 +932,12 @@ fn is_excluded(cmd: &str, excluded: &[ExcludePattern]) -> bool {
     })
 }
 
-fn rewrite_segment_inner(seg: &str, excluded: &[ExcludePattern], depth: usize) -> Option<String> {
+fn rewrite_segment_inner(
+    seg: &str,
+    excluded: &[ExcludePattern],
+    curl_bypass: &[String],
+    depth: usize,
+) -> Option<String> {
     let trimmed = seg.trim();
     if trimmed.is_empty() {
         return None;
@@ -878,7 +952,7 @@ fn rewrite_segment_inner(seg: &str, excluded: &[ExcludePattern], depth: usize) -
             if rest.is_empty() {
                 return None;
             }
-            return rewrite_segment_inner(rest, excluded, depth + 1)
+            return rewrite_segment_inner(rest, excluded, curl_bypass, depth + 1)
                 .map(|rewritten| format!("{} {}", prefix, rewritten));
         }
     }
@@ -912,7 +986,8 @@ fn rewrite_segment_inner(seg: &str, excluded: &[ExcludePattern], depth: usize) -
     }
 
     if cmd_clean.starts_with("head -") || cmd_clean.starts_with("tail ") {
-        return rewrite_line_range(cmd_clean).map(|r| format!("{}{}{}", env_prefix, r, redirect_suffix));
+        return rewrite_line_range(cmd_clean)
+            .map(|r| format!("{}{}{}", env_prefix, r, redirect_suffix));
     }
 
     if starts_with_command_word(cmd_clean, "cat") {
@@ -960,6 +1035,39 @@ fn rewrite_segment_inner(seg: &str, excluded: &[ExcludePattern], depth: usize) -
         }
     }
 
+    // `rtk curl` pipes responses through `rtk json --schema`, which produces
+    // field-type literals (`field: int`, `field: string`) and a `(N)`
+    // array-length suffix. That's a token-savings win for arbitrary
+    // third-party APIs, but actively breaks downstream JSON parsing (jq,
+    // python `json.load`, agent-side filtering) for private/internal APIs
+    // whose responses are consumed as raw JSON.
+    //
+    // Skip the rewrite when the URL contains any user-configured marker.
+    // Empty list = unchanged historical behavior (every curl gets rewritten).
+    // Configure via `[curl] bypass_url_markers` in `~/.config/rtk/config.toml`.
+    //
+    // Match against URL operands only (positional args + --url=value), not the
+    // entire command string — otherwise a marker that appears in `-H 'X-Upstream: ...'`
+    // or a `-d` body would silently disable rtk curl rewriting for an unrelated URL.
+    if rule.rtk_cmd == "rtk curl" && !curl_bypass.is_empty() {
+        let urls = extract_curl_urls(cmd_clean);
+        if curl_bypass
+            .iter()
+            .any(|marker| urls.iter().any(|u| u.contains(marker)))
+        {
+            return None;
+        }
+    }
+
+    // #1627: macOS ls -O / -@ / -e exist specifically to surface metadata
+    // columns (BSD file flags, extended attributes, ACL entries). The rtk
+    // ls filter collapses listings to a `name size` form and strips those
+    // columns — leave the user's ls invocation alone in that case so the
+    // requested metadata round-trips cleanly.
+    if rule.rtk_cmd == "rtk ls" && has_ls_metadata_flag(cmd_clean) {
+        return None;
+    }
+
     // Try each rewrite prefix (longest first) with word-boundary check
     for &prefix in rule.rewrite_prefixes {
         if let Some(rest) = strip_word_prefix(cmd_clean, prefix) {
@@ -973,6 +1081,119 @@ fn rewrite_segment_inner(seg: &str, excluded: &[ExcludePattern], depth: usize) -
     }
 
     None
+}
+
+/// Extract URL operands from a `curl` command line.
+///
+/// Returns positional arguments that look like URLs plus the value of any
+/// `--url`/`--url=` flag. Skips known curl flags that take a value (so the
+/// next token isn't misclassified as a URL) and ignores option arguments
+/// like `-H`, `-d`, `-X`.
+///
+/// Used to ensure `[curl] bypass_url_markers` only matches against actual
+/// request URLs, not header/body content that happens to contain the marker.
+fn extract_curl_urls(cmd: &str) -> Vec<String> {
+    // curl flags that consume the next token as their value. Anything after
+    // these is NOT a URL even if it looks like one.
+    const FLAGS_WITH_VALUE: &[&str] = &[
+        "-H",
+        "--header",
+        "-d",
+        "--data",
+        "--data-raw",
+        "--data-binary",
+        "--data-urlencode",
+        "-F",
+        "--form",
+        "-X",
+        "--request",
+        "-A",
+        "--user-agent",
+        "-e",
+        "--referer",
+        "-b",
+        "--cookie",
+        "-c",
+        "--cookie-jar",
+        "-o",
+        "--output",
+        "-T",
+        "--upload-file",
+        "-u",
+        "--user",
+        "--cacert",
+        "--cert",
+        "--key",
+        "--proxy",
+        "-x",
+        "--connect-timeout",
+        "--max-time",
+        "-m",
+        "--retry",
+    ];
+
+    // Use the shell-aware splitter so quoted args like `-H 'X-Upstream: ...'`
+    // produce a single header-value token. Plain split_whitespace would split
+    // on the space inside the quoted value and expose the marker substring
+    // as if it were a positional URL operand.
+    let tokens = shell_split(cmd);
+    let mut urls = Vec::new();
+    let mut i = 0;
+    if tokens.first().is_some_and(|t| t.ends_with("curl")) {
+        i = 1;
+    }
+    while i < tokens.len() {
+        let tok = tokens[i].as_str();
+        // --url=value form
+        if let Some(val) = tok.strip_prefix("--url=") {
+            urls.push(val.to_string());
+            i += 1;
+            continue;
+        }
+        // --url <value> form
+        if tok == "--url" {
+            if let Some(val) = tokens.get(i + 1) {
+                urls.push(val.clone());
+            }
+            i += 2;
+            continue;
+        }
+        // Skip flags that consume the next token
+        if FLAGS_WITH_VALUE.contains(&tok) {
+            i += 2;
+            continue;
+        }
+        // Other flags: skip just this token
+        if tok.starts_with('-') {
+            i += 1;
+            continue;
+        }
+        // Positional arg: treat as URL operand
+        urls.push(tok.to_string());
+        i += 1;
+    }
+    urls
+}
+
+/// Detect macOS-only `ls` metadata flags whose entire purpose is to surface
+/// extra columns the rtk ls filter strips (#1627): `-O` (BSD file flags),
+/// `-@` (extended attributes), `-e` (ACL entries), and any cluster that
+/// contains them like `-lO`, `-lOe`, `-l@e`.
+///
+/// Stops scanning at the `--` operand terminator so `ls -- -@snapshot`
+/// (a valid filename starting with `-@`) isn't misclassified as a
+/// metadata flag and forced into passthrough.
+fn has_ls_metadata_flag(cmd: &str) -> bool {
+    cmd.split_whitespace()
+        .skip(1) // skip the `ls` token itself
+        .take_while(|tok| *tok != "--")
+        .any(|tok| {
+            if !tok.starts_with('-') || tok.starts_with("--") || tok == "-" {
+                return false;
+            }
+            let chars = &tok[1..];
+            chars.contains('O') || chars.contains('@') || chars.contains('e')
+        })
 }
 
 /// Strip a command prefix with word-boundary check.
@@ -994,6 +1215,14 @@ fn strip_word_prefix<'a>(cmd: &'a str, prefix: &str) -> Option<&'a str> {
 mod tests {
     use super::super::report::RtkStatus;
     use super::*;
+
+    /// Whitespace-tokenized count, mirroring core::utils::count_tokens.
+    /// Used by rewrite tests to guard against regressions that keep the
+    /// rewrite shape but mangle args (which would defeat downstream
+    /// token savings at execution time).
+    fn count_tokens(s: &str) -> usize {
+        s.split_whitespace().count()
+    }
 
     #[test]
     fn test_classify_git_status() {
@@ -1553,10 +1782,8 @@ mod tests {
 
     #[test]
     fn test_rewrite_cat_before_pipe_preserves_plain_read() {
-        assert_eq!(
-            rewrite_command("cat src/main.rs | head", &[]),
-            Some("rtk read src/main.rs | head".into())
-        );
+        // #1639: pipe groups are left raw end-to-end
+        assert_eq!(rewrite_command("cat src/main.rs | head", &[]), None);
     }
 
     #[test]
@@ -1626,18 +1853,23 @@ mod tests {
     }
 
     #[test]
-    fn test_rewrite_pipe_first_only() {
-        // After a pipe, the filter command stays raw
+    fn test_rewrite_pipe_left_side_stays_raw() {
+        // RTK filters reformat output and can silently break downstream pipe
+        // consumers like grep, awk, jq (#1560: `rtk ps aux | grep python`
+        // returns nothing because rtk reformats `ps`). Leaving the entire pipe
+        // group raw is the safe default across the whole filter set.
+        assert_eq!(rewrite_command("git log -10 | grep feat", &[]), None);
         assert_eq!(
-            rewrite_command("git log -10 | grep feat", &[]),
-            Some("rtk git log -10 | grep feat".into())
+            rewrite_command("ps aux | grep python | grep -v grep", &[]),
+            None
         );
+        assert_eq!(rewrite_command("ls -la | head", &[]), None);
     }
 
     #[test]
     fn test_rewrite_find_pipe_skipped() {
-        // find in a pipe should NOT be rewritten — rtk find output format
-        // is incompatible with pipe consumers like xargs (#439)
+        // find in a pipe stays raw — same reasoning as #1560 above; this case
+        // (#439) was the original carve-out that motivated the rule.
         assert_eq!(
             rewrite_command("find . -name '*.rs' | xargs grep 'fn run'", &[]),
             None
@@ -1647,6 +1879,16 @@ mod tests {
     #[test]
     fn test_rewrite_find_pipe_xargs_wc() {
         assert_eq!(rewrite_command("find src -type f | wc -l", &[]), None);
+    }
+
+    #[test]
+    fn test_rewrite_pipe_in_compound_keeps_pipe_group_raw_only() {
+        // `cmd1 && piped_group && cmd2` rewrites the non-piped segments but
+        // leaves the entire pipe group end-to-end raw.
+        assert_eq!(
+            rewrite_command("git status && ps aux | grep python && cargo test", &[]),
+            Some("rtk git status && ps aux | grep python && rtk cargo test".into()),
+        );
     }
 
     #[test]
@@ -1805,10 +2047,9 @@ mod tests {
 
     #[test]
     fn test_rewrite_redirect_2_gt_amp_1_with_pipe() {
-        assert_eq!(
-            rewrite_command("cargo test 2>&1 | head", &[]),
-            Some("rtk cargo test 2>&1 | head".into())
-        );
+        // #1560: pipe LHS stays raw (rtk filters reformat output and break
+        // downstream consumers like grep/head/awk).
+        assert_eq!(rewrite_command("cargo test 2>&1 | head", &[]), None);
     }
 
     #[test]
@@ -2174,6 +2415,50 @@ mod tests {
         assert_eq!(
             rewrite_command("swift test --parallel", &[]),
             Some("rtk swift test --parallel".into())
+        );
+    }
+
+    #[test]
+    fn test_classify_xcodebuild() {
+        assert!(matches!(
+            classify_command("xcodebuild build -project Foo.xcodeproj"),
+            Classification::Supported {
+                rtk_equivalent: "rtk xcodebuild",
+                category: "Build",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_rewrite_xcodebuild() {
+        let original = "xcodebuild build -project Foo.xcodeproj";
+        let rewritten = rewrite_command(original, &[]).expect("xcodebuild rewrites");
+        assert_eq!(rewritten, "rtk xcodebuild build -project Foo.xcodeproj");
+        // Rewrite only adds the `rtk` prefix — never reorder or drop tokens.
+        // Guards against future regressions that keep the rewrite firing
+        // while corrupting the args (which would defeat token savings at
+        // execution time even though classification still passes).
+        assert_eq!(
+            count_tokens(&rewritten),
+            count_tokens(original) + 1,
+            "rewrite must add exactly one token (the `rtk` prefix)"
+        );
+    }
+
+    #[test]
+    fn test_rewrite_xcodebuild_test() {
+        let original =
+            "xcodebuild test -scheme MyApp -destination 'platform=iOS Simulator,name=iPhone 15'";
+        let rewritten = rewrite_command(original, &[]).expect("xcodebuild rewrites");
+        assert_eq!(
+            rewritten,
+            "rtk xcodebuild test -scheme MyApp -destination 'platform=iOS Simulator,name=iPhone 15'"
+        );
+        assert_eq!(
+            count_tokens(&rewritten),
+            count_tokens(original) + 1,
+            "rewrite must add exactly one token (the `rtk` prefix)"
         );
     }
 
@@ -3163,19 +3448,14 @@ mod tests {
 
     #[test]
     fn test_rewrite_compound_pipe_raw_filter() {
-        // Pipe: rewrite first segment only, pass through rest unchanged
-        assert_eq!(
-            rewrite_command("cargo test | grep FAILED", &[]),
-            Some("rtk cargo test | grep FAILED".into())
-        );
+        // #1560: pipe groups stay raw end-to-end.
+        assert_eq!(rewrite_command("cargo test | grep FAILED", &[]), None);
     }
 
     #[test]
     fn test_rewrite_compound_pipe_git_grep() {
-        assert_eq!(
-            rewrite_command("git log -10 | grep feat", &[]),
-            Some("rtk git log -10 | grep feat".into())
-        );
+        // #1560: pipe groups stay raw end-to-end.
+        assert_eq!(rewrite_command("git log -10 | grep feat", &[]), None);
     }
 
     #[test]
@@ -3281,6 +3561,201 @@ mod tests {
     fn test_rewrite_empty_excludes_rewrites_curl() {
         let excluded: Vec<String> = vec![];
         assert!(rewrite_command("curl https://api.example.com", &excluded).is_some());
+    }
+
+    // `[curl] bypass_url_markers` lets users opt private / internal JSON APIs
+    // out of the `rtk curl … --schema` rewrite when the rewritten output would
+    // break a downstream parser. Tests below pass markers explicitly via
+    // `rewrite_command_with_options` so behavior is independent of the on-disk
+    // user config.
+    fn curl_bypass_opts(markers: &[&str]) -> RewriteOptions {
+        RewriteOptions {
+            curl_bypass_url_markers: markers.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn test_rewrite_curl_bypasses_localhost_marker() {
+        // curl to a configured localhost API returns None (no rewrite), so the
+        // original curl runs verbatim and the caller gets real JSON instead of
+        // schema-mode literals.
+        let opts = curl_bypass_opts(&["localhost:3300/"]);
+        assert_eq!(
+            rewrite_command_with_options(
+                "curl http://localhost:3300/api/change-requests",
+                &[],
+                &opts
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn test_rewrite_curl_bypasses_loopback_marker() {
+        // Loopback variant — separate marker entry.
+        let opts = curl_bypass_opts(&["127.0.0.1:3300/"]);
+        assert_eq!(
+            rewrite_command_with_options("curl -s http://127.0.0.1:3300/api/health", &[], &opts),
+            None
+        );
+    }
+
+    #[test]
+    fn test_rewrite_curl_bypasses_post_with_headers_and_payload() {
+        // Real-world POST variant: -X POST, -H header, -d body. Bypass must
+        // trigger regardless of curl flag positioning, since markers are a
+        // substring match against the full segment.
+        let opts = curl_bypass_opts(&["localhost:3300/"]);
+        assert_eq!(
+            rewrite_command_with_options(
+                "curl -s -X POST -H 'x-api-key: foo' -d '{}' http://localhost:3300/api/session-ack",
+                &[],
+                &opts
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn test_rewrite_curl_bypasses_https_hostname_marker() {
+        // Hostname-based marker (e.g. an internal Tailscale or VPN-only API).
+        let opts = curl_bypass_opts(&["//api.internal.example/"]);
+        assert_eq!(
+            rewrite_command_with_options(
+                "curl https://api.internal.example/v1/projects",
+                &[],
+                &opts
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn test_rewrite_curl_bypasses_multiple_markers() {
+        // Multiple markers act as OR — any matching substring bypasses.
+        let opts = curl_bypass_opts(&["localhost:8090/", "localhost:11434/"]);
+        assert_eq!(
+            rewrite_command_with_options("curl http://localhost:8090/v1/models", &[], &opts),
+            None
+        );
+        assert_eq!(
+            rewrite_command_with_options("curl http://localhost:11434/api/tags", &[], &opts),
+            None
+        );
+    }
+
+    #[test]
+    fn test_rewrite_curl_default_empty_bypass_still_rewrites() {
+        // Default behavior — empty bypass markers — leaves the historical
+        // rewrite-everything semantics intact. This is the core upstream
+        // contract: opt-in only, no behavior change for users who haven't
+        // configured anything.
+        let opts = RewriteOptions::default();
+        assert_eq!(
+            rewrite_command_with_options(
+                "curl http://localhost:3300/api/change-requests",
+                &[],
+                &opts
+            ),
+            Some("rtk curl http://localhost:3300/api/change-requests".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_curl_still_rewrites_unmatched_url() {
+        // Third-party / unconfigured URL is not in the marker list, so the
+        // rtk curl rewrite still fires. Token-savings premise preserved for
+        // everyone except the user's own opt-in endpoints.
+        let opts = curl_bypass_opts(&["localhost:3300/"]);
+        assert_eq!(
+            rewrite_command_with_options("curl https://api.github.com/repos/foo/bar", &[], &opts),
+            Some("rtk curl https://api.github.com/repos/foo/bar".into())
+        );
+        assert_eq!(
+            rewrite_command_with_options("curl https://example.com/api/data", &[], &opts),
+            Some("rtk curl https://example.com/api/data".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_curl_marker_is_port_specific() {
+        // Subtle: localhost on a port NOT in the marker list (e.g. someone
+        // running a third-party JSON server on :4000) STILL gets rewritten.
+        // The bypass is intentionally narrow — markers include port to keep
+        // collateral surface small.
+        let opts = curl_bypass_opts(&["localhost:3300/"]);
+        assert_eq!(
+            rewrite_command_with_options("curl http://localhost:4000/api/foo", &[], &opts),
+            Some("rtk curl http://localhost:4000/api/foo".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_compound_with_bypassed_curl_skips_only_that_segment() {
+        // In a compound command, the bypassed-curl segment passes through
+        // unchanged but other rewritable segments (git status) still get
+        // rewritten. Confirms the bypass is per-segment, not all-or-nothing.
+        let opts = curl_bypass_opts(&["localhost:3300/"]);
+        assert_eq!(
+            rewrite_command_with_options(
+                "git status && curl http://localhost:3300/api/change-requests",
+                &[],
+                &opts
+            ),
+            Some("rtk git status && curl http://localhost:3300/api/change-requests".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_curl_marker_in_header_does_not_bypass() {
+        // Regression: bypass markers must only match URL operands, not -H
+        // header values or -d body content. A request whose actual URL
+        // doesn't contain the marker should still get rewritten even when
+        // the marker text happens to appear inside a header.
+        let opts = curl_bypass_opts(&["localhost:3300/"]);
+        assert_eq!(
+            rewrite_command_with_options(
+                "curl -H 'X-Upstream: localhost:3300/' https://api.example.com/data",
+                &[],
+                &opts
+            ),
+            Some("rtk curl -H 'X-Upstream: localhost:3300/' https://api.example.com/data".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_curl_marker_in_data_body_does_not_bypass() {
+        // Same regression, body payload form: marker inside -d should not
+        // disable rtk curl when the URL doesn't match.
+        let opts = curl_bypass_opts(&["internal.example.com/"]);
+        assert_eq!(
+            rewrite_command_with_options(
+                "curl -X POST -d 'host=internal.example.com/foo' https://public.example.com/api",
+                &[],
+                &opts
+            ),
+            Some(
+                "rtk curl -X POST -d 'host=internal.example.com/foo' https://public.example.com/api"
+                    .into()
+            )
+        );
+    }
+
+    #[test]
+    fn test_extract_curl_urls_skips_flag_values() {
+        let urls = super::extract_curl_urls(
+            "curl -H 'X-Upstream: localhost:3300/' -X POST -d body=x https://api.example.com/data",
+        );
+        assert_eq!(urls, vec!["https://api.example.com/data".to_string()]);
+    }
+
+    #[test]
+    fn test_extract_curl_urls_handles_url_flag() {
+        let urls = super::extract_curl_urls("curl --url https://example.com/foo --silent");
+        assert_eq!(urls, vec!["https://example.com/foo".to_string()]);
+
+        let urls = super::extract_curl_urls("curl --url=https://example.com/bar");
+        assert_eq!(urls, vec!["https://example.com/bar".to_string()]);
     }
 
     #[test]
@@ -3394,6 +3869,65 @@ mod tests {
             rewrite_command("gh pr list", &[]),
             Some("rtk gh pr list".into())
         );
+    }
+
+    // --- #1627: ls -O / -@ / -e (macOS metadata flags) passthrough ---
+
+    #[test]
+    fn test_rewrite_ls_metadata_flag_o_skipped() {
+        assert_eq!(rewrite_command("ls -lO some/dir", &[]), None);
+        assert_eq!(rewrite_command("ls -O", &[]), None);
+    }
+
+    #[test]
+    fn test_rewrite_ls_metadata_flag_at_skipped() {
+        assert_eq!(rewrite_command("ls -l@ some/dir", &[]), None);
+        assert_eq!(rewrite_command("ls -@", &[]), None);
+    }
+
+    #[test]
+    fn test_rewrite_ls_metadata_flag_acl_skipped() {
+        // -e (ACL entries) is macOS-only; the rtk ls filter strips it.
+        assert_eq!(rewrite_command("ls -le some/dir", &[]), None);
+    }
+
+    #[test]
+    fn test_rewrite_ls_metadata_flag_combined_skipped() {
+        assert_eq!(rewrite_command("ls -lO@e some/dir", &[]), None);
+        assert_eq!(rewrite_command("ls -O -@ -e some/dir", &[]), None);
+    }
+
+    #[test]
+    fn test_rewrite_ls_without_metadata_still_rewrites() {
+        // The standard cases the listing-compression filter is built for must
+        // keep working — only metadata-inspection invocations are passed through.
+        assert_eq!(rewrite_command("ls", &[]), Some("rtk ls".into()));
+        assert_eq!(rewrite_command("ls -l", &[]), Some("rtk ls -l".into()));
+        assert_eq!(rewrite_command("ls -la", &[]), Some("rtk ls -la".into()));
+        assert_eq!(
+            rewrite_command("ls some/dir", &[]),
+            Some("rtk ls some/dir".into())
+        );
+    }
+
+    #[test]
+    fn test_has_ls_metadata_flag_unit() {
+        assert!(has_ls_metadata_flag("ls -O"));
+        assert!(has_ls_metadata_flag("ls -lO"));
+        assert!(has_ls_metadata_flag("ls -@"));
+        assert!(has_ls_metadata_flag("ls -e"));
+        assert!(has_ls_metadata_flag("ls -lOe"));
+        assert!(has_ls_metadata_flag("ls -O some/dir"));
+
+        assert!(!has_ls_metadata_flag("ls"));
+        assert!(!has_ls_metadata_flag("ls -l"));
+        assert!(!has_ls_metadata_flag("ls -la"));
+        assert!(!has_ls_metadata_flag("ls -lah"));
+        assert!(!has_ls_metadata_flag("ls some/dir"));
+        // Long opts must not trigger.
+        assert!(!has_ls_metadata_flag("ls --color=auto"));
+        // The "--" args separator must not trigger.
+        assert!(!has_ls_metadata_flag("ls -- some/dir"));
     }
 
     // --- #508: RTK_DISABLED detection helpers ---
@@ -3719,11 +4253,14 @@ mod tests {
 
     // --- Pipe + operator rewrite ---
 
+    // #1560: pipe groups stay raw end-to-end. Non-piped segments around a
+    // pipe group are still rewritten when the operator separates them.
+
     #[test]
     fn test_rewrite_pipe_then_and() {
         assert_eq!(
             rewrite_command("git log | head -5 && git stash", &[]),
-            Some("rtk git log | head -5 && rtk git stash".into())
+            Some("git log | head -5 && rtk git stash".into())
         );
     }
 
@@ -3731,7 +4268,7 @@ mod tests {
     fn test_rewrite_pipe_then_semicolon() {
         assert_eq!(
             rewrite_command("cargo test | head; git status", &[]),
-            Some("rtk cargo test | head; rtk git status".into())
+            Some("cargo test | head; rtk git status".into())
         );
     }
 
@@ -3739,7 +4276,7 @@ mod tests {
     fn test_rewrite_pipe_then_or() {
         assert_eq!(
             rewrite_command("cargo test | grep FAIL || git stash", &[]),
-            Some("rtk cargo test | grep FAIL || rtk git stash".into())
+            Some("cargo test | grep FAIL || rtk git stash".into())
         );
     }
 
@@ -3750,7 +4287,7 @@ mod tests {
                 "RUST_BACKTRACE=1 cargo test 2>&1 | grep FAILED && git stash",
                 &[]
             ),
-            Some("RUST_BACKTRACE=1 rtk cargo test 2>&1 | grep FAILED && rtk git stash".into())
+            Some("RUST_BACKTRACE=1 cargo test 2>&1 | grep FAILED && rtk git stash".into())
         );
     }
 
@@ -3758,7 +4295,7 @@ mod tests {
     fn test_rewrite_and_then_pipe() {
         assert_eq!(
             rewrite_command("git status && cargo test | grep FAIL", &[]),
-            Some("rtk git status && rtk cargo test | grep FAIL".into())
+            Some("rtk git status && cargo test | grep FAIL".into())
         );
     }
 
@@ -3766,7 +4303,7 @@ mod tests {
     fn test_rewrite_multi_pipe_then_and() {
         assert_eq!(
             rewrite_command("git log | head | tail && git status", &[]),
-            Some("rtk git log | head | tail && rtk git status".into())
+            Some("git log | head | tail && rtk git status".into())
         );
     }
 }

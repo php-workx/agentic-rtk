@@ -29,8 +29,8 @@ def run(cmd: str) -> str:
 
 
 def escape_md_cell(value: str) -> str:
-    return value.replace("|", "\|").replace("
-", " ").replace("", " ")
+    return value.replace("|", "\\|").replace("\n", " ").replace("\r", " ")
+
 
 
 def categorize(title: str) -> str:

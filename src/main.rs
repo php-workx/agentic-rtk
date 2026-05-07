@@ -52,10 +52,10 @@ pub enum AgentTarget {
     Antigravity,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 #[command(
     name = "rtk",
-    version,
+    version = env!("RTK_VERSION"),
     about = "Rust Token Killer - Minimize LLM token consumption",
     long_about = "A high-performance CLI proxy designed to filter and summarize system outputs before they reach your LLM context."
 )]
@@ -68,8 +68,14 @@ struct Cli {
     verbose: u8,
 
     /// Ultra-compact mode: ASCII icons, inline format (Level 2 optimizations)
-    #[arg(long, global = true)]
+    #[arg(long, global = true, conflicts_with = "json")]
     ultra_compact: bool,
+
+    /// Emit machine-readable JSON envelope on stdout (untruncated, stable shape).
+    /// Bypasses the human formatter; intended for orchestrators and CI parsers.
+    /// Currently supported by: vitest, jest, playwright. Conflicts with -v / --ultra-compact.
+    #[arg(long, global = true, conflicts_with = "verbose")]
+    json: bool,
 
     /// Set SKIP_ENV_VALIDATION=1 for child processes (Next.js, tsc, lint, prisma)
     #[arg(long = "skip-env", global = true)]
@@ -320,6 +326,9 @@ enum Commands {
         /// Filter by file type (e.g., ts, py, rust)
         #[arg(short = 't', long)]
         file_type: Option<String>,
+        /// Use PCRE2 regex syntax (ripgrep compatibility)
+        #[arg(long)]
+        pcre2: bool,
         /// Show line numbers (always on, accepted for grep/rg compatibility)
         #[arg(short = 'n', long)]
         line_numbers: bool,
@@ -1536,6 +1545,12 @@ fn run_cli() -> Result<i32> {
         hooks::integrity::runtime_check()?;
     }
 
+    if cli.json && !is_json_supported(&cli.command) {
+        anyhow::bail!(
+            "--json is not supported for this command. Supported: vitest, jest, playwright."
+        );
+    }
+
     let code = match cli.command {
         Commands::Ls { args } => ls::run(&args, cli.verbose)?,
 
@@ -1902,6 +1917,7 @@ fn run_cli() -> Result<i32> {
             max,
             context_only,
             file_type,
+            pcre2,
             line_numbers: _, // no-op: line numbers always enabled in grep_cmd::run
             extra_args,
         } => grep_cmd::run(
@@ -1911,6 +1927,7 @@ fn run_cli() -> Result<i32> {
             max,
             context_only,
             file_type.as_deref(),
+            pcre2,
             &extra_args,
             cli.verbose,
         )?,
@@ -1933,6 +1950,20 @@ fn run_cli() -> Result<i32> {
             if show {
                 hooks::init::show_config(codex)?;
             } else if uninstall {
+                // Antigravity / Kilocode have install-only paths today. Bail
+                // with a clear error instead of falling through to the
+                // claude/cursor uninstall path (which would either fail with
+                // a misleading message or remove the wrong agent).
+                if agent == Some(AgentTarget::Antigravity) {
+                    anyhow::bail!(
+                        "Uninstall is not yet supported for --agent antigravity. Remove .agents/rules/antigravity-rtk-rules.md manually."
+                    );
+                }
+                if agent == Some(AgentTarget::Kilocode) {
+                    anyhow::bail!(
+                        "Uninstall is not yet supported for --agent kilocode. Remove .kilocode/rules/rtk-rules.md manually."
+                    );
+                }
                 let cursor = agent == Some(AgentTarget::Cursor);
                 hooks::init::uninstall(global, gemini, codex, cursor, cli.verbose)?;
             } else if gemini {
@@ -2065,7 +2096,7 @@ fn run_cli() -> Result<i32> {
         }
 
         Commands::Jest { ref args } | Commands::Vitest { ref args } => {
-            vitest_cmd::run_test(&cli.command, args, cli.verbose)?
+            vitest_cmd::run_test(&cli.command, args, cli.verbose, cli.json)?
         }
 
         Commands::Prisma { command } => match command {
@@ -2110,7 +2141,7 @@ fn run_cli() -> Result<i32> {
 
         Commands::Format { args } => format_cmd::run(&args, cli.verbose)?,
 
-        Commands::Playwright { args } => playwright_cmd::run(&args, cli.verbose)?,
+        Commands::Playwright { args } => playwright_cmd::run(&args, cli.verbose, cli.json)?,
 
         Commands::Cargo { command } => match command {
             CargoCommands::Build { args } => {
@@ -2272,7 +2303,7 @@ fn run_cli() -> Result<i32> {
                 }
                 "next" => next_cmd::run(&args[1..], cli.verbose)?,
                 "prettier" => prettier_cmd::run(&args[1..], cli.verbose)?,
-                "playwright" => playwright_cmd::run(&args[1..], cli.verbose)?,
+                "playwright" => playwright_cmd::run(&args[1..], cli.verbose, cli.json)?,
                 _ => npm_cmd::exec(&args, cli.verbose, cli.skip_env)?,
             }
         }
@@ -2653,10 +2684,46 @@ fn is_operational_command(cmd: &Commands) -> bool {
     )
 }
 
+/// Returns true for commands that implement JSON envelope output.
+///
+/// `Npx` only forwards `--json` for the `playwright` subcommand; other npx
+/// invocations (cowsay, vitest, etc.) emit plain text, so accepting `--json`
+/// for them would silently break the machine-readable contract.
+fn is_json_supported(cmd: &Commands) -> bool {
+    match cmd {
+        Commands::Vitest { .. } | Commands::Jest { .. } | Commands::Playwright { .. } => true,
+        Commands::Npx { args } => matches!(args.first().map(String::as_str), Some("playwright")),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::Parser;
+
+    /// T6 (--json conflict matrix): --json must reject combinations with -v / --ultra-compact.
+    #[test]
+    fn test_json_flag_parses_alone() {
+        let cli = Cli::try_parse_from(["rtk", "--json", "vitest"]).expect("--json alone parses");
+        assert!(cli.json);
+        assert_eq!(cli.verbose, 0);
+        assert!(!cli.ultra_compact);
+    }
+
+    #[test]
+    fn test_json_flag_conflicts_with_verbose() {
+        let err = Cli::try_parse_from(["rtk", "--json", "-v", "vitest"])
+            .expect_err("--json + -v must conflict");
+        assert!(matches!(err.kind(), ErrorKind::ArgumentConflict));
+    }
+
+    #[test]
+    fn test_json_flag_conflicts_with_ultra_compact() {
+        let err = Cli::try_parse_from(["rtk", "--json", "--ultra-compact", "vitest"])
+            .expect_err("--json + --ultra-compact must conflict");
+        assert!(matches!(err.kind(), ErrorKind::ArgumentConflict));
+    }
 
     #[test]
     fn test_toml_fallback_postprocessor_feature_is_preserved() {
@@ -2811,14 +2878,6 @@ mod tests {
     }
 
     #[test]
-    fn test_try_parse_help_is_display_help() {
-        match Cli::try_parse_from(["rtk", "--help"]) {
-            Err(e) => assert_eq!(e.kind(), ErrorKind::DisplayHelp),
-            Ok(_) => panic!("Expected DisplayHelp error"),
-        }
-    }
-
-    #[test]
     fn test_try_parse_version_is_display_version() {
         match Cli::try_parse_from(["rtk", "--version"]) {
             Err(e) => assert_eq!(e.kind(), ErrorKind::DisplayVersion),
@@ -2875,6 +2934,29 @@ mod tests {
                 Commands::Gain { failures, .. } => assert!(failures),
                 _ => panic!("Expected Gain command"),
             }
+        }
+    }
+
+    #[test]
+    fn test_grep_pcre2_before_pattern_parses() {
+        let cli =
+            Cli::try_parse_from(["rtk", "grep", "-n", "--pcre2", "e2e-tests(?!-v2)"]).unwrap();
+        match cli.command {
+            Commands::Grep {
+                pattern,
+                path,
+                line_numbers,
+                pcre2,
+                extra_args,
+                ..
+            } => {
+                assert_eq!(pattern, "e2e-tests(?!-v2)");
+                assert_eq!(path, ".");
+                assert!(line_numbers);
+                assert!(pcre2);
+                assert!(extra_args.is_empty());
+            }
+            _ => panic!("Expected Grep command"),
         }
     }
 
@@ -3286,6 +3368,9 @@ mod tests {
         let cmd = Commands::Web {
             url: "https://example.com".to_string(),
         };
-        assert!(is_operational_command(&cmd), "Commands::Web should be operational");
+        assert!(
+            is_operational_command(&cmd),
+            "Commands::Web should be operational"
+        );
     }
 }

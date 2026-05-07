@@ -1,15 +1,16 @@
-# Upstream PR Triage — 2026-05-04 08:15 UTC
+# Upstream PR Triage — 2026-05-04 15:21 UTC
 
 | PR | Title | Author | Files | Category | Conflict Risk | Status | Notes |
 |----|-------|--------|-------|----------|---------------|--------|-------|
+| #1702 | docs: add Turkish README translation | tugkanboz | 2 | docs | low | pending |  |
 | #1697 | feat(skills): improve triage skills scalability for ... | FlorianBruniaux | 3 | feature | low | pending |  |
-| #1696 | fix(tee): keep head + tail when raw output exceeds m... | iliaal | 1 | bugfix | low | pending |  |
-| #1693 | refacto(crate): split into lib + bin for downstream ... | aeppling | 8 | refactor | medium | pending |  |
+| #1696 | fix(tee): keep head + tail when raw output exceeds m... | iliaal | 1 | bugfix | low | approved |  | 
+| #1693 | refacto(crate): split into lib + bin for downstream ... | aeppling | 9 | refactor | medium | pending |  |
 | #1692 | Next Release | aeppling | 14 | other | high | pending |  |
-| #1689 | fix(ls): force LC_TIME=C for locale-independent date... | lakewaban | 1 | bugfix | low | pending | The LS_DATE_RE regex expects English month names (Jan, Feb,  |
+| #1689 | fix(ls): force LC_TIME=C for locale-independent date... | lakewaban | 1 | bugfix | low | approved | The LS_DATE_RE regex expects English month names (Jan, Feb, | 
 | #1686 | fix: pre-extraction path traversal check in install.sh | ether-btc | 1 | bugfix | low | pending |  |
 | #1685 | Improve discover command normalisation | russellbrenner | 7 | other | medium | pending |  |
-| #1679 | fix(git): inject `--` for bare-word-with-extension p... | truffle-dev | 1 | bugfix | low | pending | Closes #1669. |
+| #1679 | fix(git): inject `--` for bare-word-with-extension p... | truffle-dev | 1 | bugfix | low | approved | Closes #1669. | 
 | #1678 | fix(grep): support --pcre2 flag | vyctorbrzezowski | 2 | bugfix | low | pending |  |
 | #1677 | feat(curl): config-driven URL allowlist to bypass sc... | globalsecurepayments | 6 | feature | medium | pending |  |
 | #1675 | fix(ls): preserve permission info as octal when -l/-... | ryana-0154 | 1 | bugfix | low | pending |  |
@@ -18,12 +19,12 @@
 | #1666 | fix: use blob/master instead of blob/main in telemet... | mgiovani | 2 | bugfix | high | pending |  |
 | #1662 | fix(learn): drop parallel-tool-call cancellations fr... | season179 | 1 | bugfix | low | pending | Closes #1659. |
 | #1661 | fix(gh): passthrough --help/-h on pr subcommands (#1... | season179 | 5 | bugfix | low | pending | Closes #1474. |
-| #1660 | fix: report ok for silent npm scripts | sdwolf4103 | 1 | bugfix | low | pending |  |
-| #1657 | fix(tee): render absolute log path in format_hint | truffle-dev | 1 | bugfix | low | pending |  |
+| #1660 | fix: report ok for silent npm scripts | sdwolf4103 | 1 | bugfix | low | rejected |  | 
+| #1657 | fix(tee): render absolute log path in format_hint | truffle-dev | 1 | bugfix | low | approved |  | 
 | #1649 | feat(php): consolidated PHP tooling (php, artisan, p... | iliaal | 19 | feature | high | pending |  |
-| #1648 | fix(hooks/claude): omit permissionDecision under byp... | iliaal | 1 | bugfix | low | pending |  |
-| #1647 | fix(ls): force C locale to fix '(empty)' on non-Engl... | M0Rf30 | 1 | bugfix | low | pending |  |
-| #1645 | fix(filters): remove max_lines cap from helm filter ... | KuaaMU | 1 | bugfix | low | pending |  |
+| #1648 | fix(hooks/claude): omit permissionDecision under byp... | iliaal | 1 | bugfix | low | approved |  | 
+| #1647 | fix(ls): force C locale to fix '(empty)' on non-Engl... | M0Rf30 | 1 | bugfix | low | approved |  | 
+| #1645 | fix(filters): remove max_lines cap from helm filter ... | KuaaMU | 1 | bugfix | low | approved |  | 
 | #1640 | fix(rewrite): pass ls -O / -@ / -e through unchanged... | officialasishkumar | 1 | bugfix | low | pending |  |
 | #1639 | fix(rewrite): leave pipe groups raw end-to-end (#1560) | officialasishkumar | 1 | bugfix | low | pending |  |
 | #1638 | fix(go): pass through unrecognized go build output i... | officialasishkumar | 1 | bugfix | low | pending |  |
@@ -51,7 +52,6 @@
 | #1586 | refactor(git): Fix stash status detection for all cases | KuSh | 1 | refactor | low | pending |  |
 | #1578 | feat(git): support git sparse-checkout subcommand | zackharley | 5 | feature | low | pending |  |
 | #1576 | fix(dotnet): move build/test/restore status line to ... | F0rty-Tw0 | 1 | bugfix | low | pending | Closes #1574. |
-| #1573 | fix(git): don't count --max-lines truncation as savi... | SAY-5 | 5 | bugfix | low | pending | Closes #1561. |
 
 ## How to use this report
 

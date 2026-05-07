@@ -131,8 +131,11 @@ fn run_filtered(name: &str, args: &[String], verbose: u8, skip_env: bool) -> Res
     let opts = if is_package_install {
         runner::RunOptions::default()
             .postprocess(&[PostprocessKind::PackageInstall, PostprocessKind::Stacktrace])
+            .early_exit_on_failure()
     } else {
-        runner::RunOptions::default().postprocess(&[PostprocessKind::Stacktrace])
+        runner::RunOptions::default()
+            .postprocess(&[PostprocessKind::Stacktrace])
+            .early_exit_on_failure()
     };
 
     runner::run_filtered(
@@ -147,17 +150,25 @@ fn run_filtered(name: &str, args: &[String], verbose: u8, skip_env: bool) -> Res
 /// Filter npm run output - strip boilerplate, progress bars, npm WARN
 fn filter_npm_output(output: &str) -> String {
     let mut result = Vec::new();
+    let mut seen_substantive_output = false;
+    let mut leading_gt_lines = Vec::new();
 
     for line in output.lines() {
-        // Skip npm boilerplate
-        if line.starts_with('>') && line.contains('@') {
+        let trimmed = line.trim_start();
+
+        // npm 7+ emits script name and command as leading `> ` lines without
+        // package@version. Treat 2+ leading lines as lifecycle echo so silent
+        // scripts can fall back to `ok`, but preserve one as possible output.
+        if !seen_substantive_output && trimmed.starts_with("> ") {
+            leading_gt_lines.push(line.to_string());
             continue;
         }
         // Skip npm lifecycle scripts
+        // AGENTIC-RTK-FORK: Keep security warnings visible. See FORK.md.
         if line.trim_start().starts_with("npm WARN") && !is_security_warning_line(line) {
             continue;
         }
-        if line.trim_start().starts_with("npm notice") {
+        if trimmed.starts_with("npm notice") {
             continue;
         }
         // Skip progress indicators
@@ -169,7 +180,19 @@ fn filter_npm_output(output: &str) -> String {
             continue;
         }
 
+        if !seen_substantive_output {
+            if leading_gt_lines.len() == 1 {
+                result.append(&mut leading_gt_lines);
+            } else {
+                leading_gt_lines.clear();
+            }
+        }
+        seen_substantive_output = true;
         result.push(line.to_string());
+    }
+
+    if !seen_substantive_output && leading_gt_lines.len() == 1 {
+        result.extend(leading_gt_lines);
     }
 
     if result.is_empty() {
@@ -262,5 +285,82 @@ npm notice
         let output = "\n\n\n";
         let result = filter_npm_output(output);
         assert_eq!(result, "ok");
+        assert_eq!(count_tokens(&result), 1, "ok is one token");
+    }
+
+    #[test]
+    fn test_filter_npm_output_lifecycle_only_success() {
+        let output = r#"
+> typecheck
+> tsc --noEmit
+"#;
+        let result = filter_npm_output(output);
+        assert_eq!(result, "ok");
+        assert!(
+            count_tokens(&result) < count_tokens(output),
+            "filter should reduce tokens"
+        );
+    }
+
+    #[test]
+    fn test_filter_npm_output_preserves_substantive_output() {
+        let output = r#"
+> test
+> node test.js
+TEST_PASS
+"#;
+        let result = filter_npm_output(output);
+        assert_eq!(result, "TEST_PASS");
+        assert_eq!(
+            count_tokens(&result),
+            count_tokens("TEST_PASS"),
+            "substantive output token count should match expected"
+        );
+    }
+
+    #[test]
+    fn test_filter_npm_output_preserves_gt_after_substantive_output() {
+        let output = r#"
+> test
+> node test.js
+error:
+> pointer context
+"#;
+        let result = filter_npm_output(output);
+        assert_eq!(result, "error:\n> pointer context");
+    }
+
+    #[test]
+    fn test_filter_npm_output_preserves_single_leading_gt_output() {
+        let output = r#"
+> user output
+"#;
+        let result = filter_npm_output(output);
+        assert_eq!(result, "> user output");
+        assert!(count_tokens(&result) > 0, "leading > output should have tokens");
+    }
+
+    #[test]
+    fn test_filter_npm_output_retains_security_warning() {
+        let output = r#"npm WARN deprecated left-pad@1.3.0: use String.prototype.padStart()
+npm WARN audit High severity vuln found in lodash: GHSA-1234-5678-xxxx
+"#;
+        let result = filter_npm_output(output);
+        assert!(
+            result.contains("GHSA-"),
+            "security warning with GHSA must be retained"
+        );
+        assert!(
+            result.contains("High severity"),
+            "security warning with severity must be retained"
+        );
+        assert!(
+            !result.contains("deprecated"),
+            "plain npm WARN should still be filtered"
+        );
+    }
+
+    fn count_tokens(s: &str) -> usize {
+        s.split_whitespace().count()
     }
 }

@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Test execution result (vitest, playwright, jest, etc.)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TestResult {
     pub total: usize,
     pub passed: usize,
@@ -13,7 +13,7 @@ pub struct TestResult {
     pub failures: Vec<TestFailure>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TestFailure {
     pub test_name: String,
     pub file_path: String,
@@ -22,14 +22,14 @@ pub struct TestFailure {
 }
 
 /// Dependency state (pnpm, npm, cargo, etc.)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DependencyState {
     pub total_packages: usize,
     pub outdated_count: usize,
     pub dependencies: Vec<Dependency>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Dependency {
     pub name: String,
     pub current_version: String,

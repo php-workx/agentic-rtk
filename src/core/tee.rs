@@ -102,6 +102,10 @@ fn should_tee(
     tee_dir
 }
 
+/// Conservative overhead for the truncation marker template
+/// (42 bytes + up to 18 digits for the omitted count).
+const TRUNCATION_MARKER_OVERHEAD: usize = 60;
+
 /// Write raw output to a tee file in the given directory.
 /// Returns file path on success.
 fn write_tee_file(
@@ -121,18 +125,38 @@ fn write_tee_file(
     let filename = format!("{}_{}.log", epoch, slug);
     let filepath = tee_dir.join(filename);
 
-    // Truncate at max_file_size (find a safe UTF-8 char boundary)
+    // Truncate to fit in max_file_size, keeping head + tail and dropping the middle.
+    // Tail-heavy commands (test runners, build summaries) put their useful data at the
+    // end; head-only truncation throws that away. 25/75 split keeps the prologue while
+    // giving the summary three quarters of the budget.
     let content = if raw.len() > max_file_size {
-        let boundary = raw
+        let available = max_file_size.saturating_sub(TRUNCATION_MARKER_OVERHEAD);
+        let head_budget = available / 4;
+        let tail_budget = available - head_budget;
+
+        // Last UTF-8 char boundary at or before head_budget.
+        let head_end = raw
             .char_indices()
-            .take_while(|(i, _)| *i < max_file_size)
+            .take_while(|(i, _)| *i < head_budget)
             .last()
             .map(|(i, c)| i + c.len_utf8())
             .unwrap_or(0);
+
+        // First UTF-8 char boundary at or after raw.len() - tail_budget.
+        let tail_target = raw.len().saturating_sub(tail_budget);
+        let tail_start = raw
+            .char_indices()
+            .find(|(i, _)| *i >= tail_target)
+            .map(|(i, _)| i)
+            .unwrap_or(raw.len())
+            .max(head_end);
+
+        let omitted = tail_start - head_end;
         format!(
-            "{}\n\n--- truncated at {} bytes ---",
-            &raw[..boundary],
-            max_file_size
+            "{}\n\n--- {} bytes truncated from middle ---\n\n{}",
+            &raw[..head_end],
+            omitted,
+            &raw[tail_start..]
         )
     } else {
         raw.to_string()
@@ -168,19 +192,19 @@ pub fn tee_raw(raw: &str, command_slug: &str, exit_code: i32) -> Option<PathBuf>
     )
 }
 
-/// Format the hint line with ~ shorthand for home directory.
+/// Format the hint line with the absolute log path so downstream
+/// consumers can use it verbatim. `~` shorthand does not expand
+/// inside double quotes and an unquoted `~/path with spaces` splits
+/// on the space, so paths under `$HOME` are rendered absolute.
 fn format_hint(path: &std::path::Path) -> String {
-    let display = if let Some(home) = dirs::home_dir() {
-        if let Ok(relative) = path.strip_prefix(&home) {
-            format!("~/{}", relative.display())
-        } else {
-            path.display().to_string()
-        }
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
     } else {
-        path.display().to_string()
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
     };
-
-    format!("[full output: {}]", display)
+    format!("[full output: {}]", abs.display())
 }
 
 /// Convenience: tee + format hint in one call.
@@ -358,49 +382,79 @@ mod tests {
 
         let path = result.unwrap();
         let content = fs::read_to_string(&path).unwrap();
-        assert!(content.contains("--- truncated at 1000 bytes ---"));
+        assert!(content.contains("bytes truncated from middle"));
         assert!(content.len() < 2000);
+        assert!(
+            content.len() <= 1000,
+            "truncated content must not exceed max_file_size"
+        );
+    }
+
+    #[test]
+    fn test_write_tee_file_keeps_tail() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        // Simulate a tail-heavy command: lots of progress lines, then a summary.
+        let mut raw = String::new();
+        for i in 0..3000 {
+            raw.push_str(&format!("TEST {}/3000 [foo_{}.phpt]\n", i, i));
+        }
+        let summary = "FAILED TEST SUMMARY\nfoo_42.phpt\nfoo_777.phpt\nDONE";
+        raw.push_str(summary);
+
+        // Cap below total size so truncation engages.
+        let cap = 4096;
+        assert!(raw.len() > cap);
+
+        let result = write_tee_file(&raw, "make_test", tmpdir.path(), cap, 20).unwrap();
+        let content = fs::read_to_string(&result).unwrap();
+
+        // Head + tail both survive; middle marker present.
+        assert!(content.starts_with("TEST 0/3000"), "head missing");
+        assert!(content.contains("bytes truncated from middle"));
+        assert!(content.ends_with("DONE"), "tail summary missing");
+        assert!(content.contains("FAILED TEST SUMMARY"));
     }
 
     #[test]
     fn test_write_tee_file_truncation_utf8_boundary() {
         let tmpdir = tempfile::tempdir().unwrap();
-        // Create a string where the truncation point falls inside a multi-byte char.
         // Japanese chars are 3 bytes each in UTF-8.
-        // 332 chars * 3 bytes = 996 bytes, then one more = 999 bytes.
-        // With max_file_size=998, the cut falls mid-character.
-        let japanese = "\u{6F22}".repeat(333); // 999 bytes of 3-byte chars
-        assert_eq!(japanese.len(), 999);
+        // 1000 chars * 3 bytes = 3000 bytes total. With max_file_size=998 the
+        // head budget is 998/4 = 249 bytes (83 chars * 3 = 249), and the tail
+        // budget is 749 bytes — both fall on char boundaries that the slicer
+        // must respect or panic.
+        let japanese = "\u{6F22}".repeat(1000);
+        assert_eq!(japanese.len(), 3000);
 
-        // Truncate at 998 — falls in the middle of the 333rd character
         let result = write_tee_file(&japanese, "test_utf8", tmpdir.path(), 998, 20);
         assert!(result.is_some());
 
         let path = result.unwrap();
         let content = fs::read_to_string(&path).unwrap();
-        assert!(content.contains("--- truncated at 998 bytes ---"));
-        // Should contain 332 full characters (996 bytes), not panic
-        assert!(content.starts_with(&"\u{6F22}".repeat(332)));
+        assert!(content.contains("bytes truncated from middle"));
+        // Head: starts with the first chars (rounded down to a char boundary).
+        assert!(content.starts_with('\u{6F22}'));
+        // Tail: ends with the last char of the input.
+        assert!(content.ends_with('\u{6F22}'));
     }
 
     #[test]
     fn test_write_tee_file_truncation_emoji() {
         let tmpdir = tempfile::tempdir().unwrap();
         // Emoji are 4 bytes each in UTF-8
-        let emojis = "\u{1F600}".repeat(100); // 400 bytes
-        assert_eq!(emojis.len(), 400);
+        let emojis = "\u{1F600}".repeat(200); // 800 bytes
+        assert_eq!(emojis.len(), 800);
 
-        // Truncate at 201 — falls mid-emoji (4-byte boundary is at 200, 204)
-        let result = write_tee_file(&emojis, "test_emoji", tmpdir.path(), 201, 20);
+        // Truncate at 401 — head budget = 100, tail budget = 301; both fall
+        // mid-emoji, so the slicer must round to the nearest char boundary.
+        let result = write_tee_file(&emojis, "test_emoji", tmpdir.path(), 401, 20);
         assert!(result.is_some());
 
         let path = result.unwrap();
         let content = fs::read_to_string(&path).unwrap();
-        assert!(content.contains("--- truncated at 201 bytes ---"));
-        // The emoji portion should be exactly 200 bytes (50 emojis),
-        // rounded down from 201 to the nearest char boundary
-        let target = "\u{1F600}".repeat(50);
-        assert!(content.starts_with(&target));
+        assert!(content.contains("bytes truncated from middle"));
+        assert!(content.starts_with('\u{1F600}'));
+        assert!(content.ends_with('\u{1F600}'));
     }
 
     #[test]
@@ -440,6 +494,42 @@ mod tests {
         assert!(hint.contains("123_cargo_test.log"));
     }
 
+    #[test]
+    fn test_format_hint_renders_absolute_path_under_home() {
+        // `~` shorthand does not survive shell quoting; downstream
+        // consumers copy this hint verbatim, so a path under `$HOME`
+        // must render absolute, not as `~/...`.
+        let path = if cfg!(windows) {
+            PathBuf::from(r"C:\home\dev\.local\share\rtk\tee\42_cargo_test.log")
+        } else {
+            PathBuf::from("/home/dev/.local/share/rtk/tee/42_cargo_test.log")
+        };
+        let hint = format_hint(&path);
+        let expected = if cfg!(windows) {
+            r"[full output: C:\home\dev\.local\share\rtk\tee\42_cargo_test.log]"
+        } else {
+            "[full output: /home/dev/.local/share/rtk/tee/42_cargo_test.log]"
+        };
+        assert_eq!(hint, expected);
+        assert!(!hint.contains('~'));
+    }
+    #[test]
+    fn test_format_hint_preserves_spaces_in_path() {
+        // Paths can legitimately contain spaces (macOS Application Support);
+        // the hint preserves them verbatim inside the [...] enclosure.
+        let path = if cfg!(windows) {
+            PathBuf::from(r"C:\Users\dev\Library\Application Support\rtk\tee\7_curl.log")
+        } else {
+            PathBuf::from("/Users/dev/Library/Application Support/rtk/tee/7_curl.log")
+        };
+        let hint = format_hint(&path);
+        let expected = if cfg!(windows) {
+            r"[full output: C:\Users\dev\Library\Application Support\rtk\tee\7_curl.log]"
+        } else {
+            "[full output: /Users/dev/Library/Application Support/rtk/tee/7_curl.log]"
+        };
+        assert_eq!(hint, expected);
+    }
     #[test]
     fn test_tee_config_default() {
         let config = TeeConfig::default();
@@ -502,5 +592,21 @@ directory = "/tmp/rtk-tee"
         let hint = force_tee_hint(&large_output, "test_cmd");
         std::env::remove_var("RTK_TEE");
         assert!(hint.is_none(), "Should respect RTK_TEE=0");
+    }
+    #[test]
+    fn test_write_tee_file_truncation_respects_budget() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let raw = "x".repeat(200);
+        let result = write_tee_file(&raw, "budget_test", tmpdir.path(), 120, 20);
+        assert!(result.is_some());
+
+        let path = result.unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(
+            content.len() <= 120,
+            "truncated content ({}) must not exceed max_file_size (120)",
+            content.len()
+        );
+        assert!(content.contains("bytes truncated from middle"));
     }
 }

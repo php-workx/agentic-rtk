@@ -297,6 +297,33 @@ enum PayloadAction {
     Ignore,
 }
 
+/// Detect Claude Code's `bypassPermissions` mode from the PreToolUse hook input.
+///
+/// The hook input JSON includes `permission_mode` carrying the active mode
+/// (`default`, `acceptEdits`, `plan`, `bypassPermissions`). Returns `false`
+/// when the field is absent or unrecognized — matches Claude Code's
+/// least-privilege default for unknown payloads.
+fn is_bypass_mode(v: &Value) -> bool {
+    v.get("permission_mode")
+        .and_then(|m| m.as_str())
+        .map(|m| m == "bypassPermissions")
+        .unwrap_or(false)
+}
+
+/// Decide whether to emit `permissionDecision: "allow"` in the Claude hook output.
+///
+/// Auto-allow is an optimization for `default` mode: it pre-approves the
+/// rewritten command so allow-listed users don't re-prompt for the new form.
+///
+/// Under `bypassPermissions`, Claude Code drops `updatedInput` whenever
+/// `permissionDecision` is present in the same `hookSpecificOutput` envelope —
+/// the original command then runs raw and the rewrite silently fails. Since
+/// bypass mode skips prompts already, the auto-allow has nothing to optimize,
+/// so omitting it costs nothing and restores the rewrite path.
+fn should_emit_allow_decision(verdict: &PermissionVerdict, bypass_mode: bool) -> bool {
+    matches!(verdict, PermissionVerdict::Allow) && !bypass_mode
+}
+
 fn process_claude_payload(v: &Value) -> PayloadAction {
     let cmd = match v
         .pointer("/tool_input/command")
@@ -339,7 +366,7 @@ fn process_claude_payload(v: &Value) -> PayloadAction {
         "updatedInput": updated_input
     });
 
-    if verdict == PermissionVerdict::Allow {
+    if should_emit_allow_decision(&verdict, is_bypass_mode(v)) {
         hook_output
             .as_object_mut()
             .unwrap()
@@ -687,6 +714,49 @@ mod tests {
     #[test]
     fn test_claude_passthrough_no_output() {
         assert!(run_claude_inner(&claude_input("htop")).is_none());
+    }
+
+    #[test]
+    fn test_is_bypass_mode_recognizes_bypass_permissions() {
+        let v: Value = serde_json::from_str(
+            r#"{"permission_mode":"bypassPermissions","tool_input":{"command":"git status"}}"#,
+        )
+        .unwrap();
+        assert!(is_bypass_mode(&v));
+    }
+
+    #[test]
+    fn test_is_bypass_mode_treats_other_modes_as_non_bypass() {
+        for mode in ["default", "acceptEdits", "plan", "unknown_future_mode"] {
+            let v: Value = serde_json::from_str(&format!(
+                r#"{{"permission_mode":"{mode}","tool_input":{{"command":"git status"}}}}"#
+            ))
+            .unwrap();
+            assert!(!is_bypass_mode(&v), "{mode} should not count as bypass");
+        }
+    }
+
+    #[test]
+    fn test_is_bypass_mode_absent_field_defaults_to_false() {
+        let v: Value = serde_json::from_str(r#"{"tool_input":{"command":"git status"}}"#).unwrap();
+        assert!(!is_bypass_mode(&v));
+    }
+
+    #[test]
+    fn test_should_emit_allow_decision_truth_table() {
+        // Allow + default → emit (the auto-allow optimization)
+        assert!(should_emit_allow_decision(&PermissionVerdict::Allow, false));
+        // Allow + bypass → omit (would silently kill updatedInput)
+        assert!(!should_emit_allow_decision(&PermissionVerdict::Allow, true));
+        // Non-Allow verdicts → omit regardless of mode
+        for verdict in [
+            PermissionVerdict::Default,
+            PermissionVerdict::Ask,
+            PermissionVerdict::Deny,
+        ] {
+            assert!(!should_emit_allow_decision(&verdict, false));
+            assert!(!should_emit_allow_decision(&verdict, true));
+        }
     }
 
     #[test]

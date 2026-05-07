@@ -7,8 +7,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/rtk-ai/rtk/actions"><img src="https://github.com/rtk-ai/rtk/workflows/Security%20Check/badge.svg" alt="CI"></a>
-  <a href="https://github.com/rtk-ai/rtk/releases"><img src="https://img.shields.io/github/v/release/rtk-ai/rtk" alt="Release"></a>
+  <a href="https://github.com/php-workx/agentic-rtk/actions"><img src="https://github.com/php-workx/agentic-rtk/workflows/Security%20Check/badge.svg" alt="CI"></a>
+  <a href="https://github.com/php-workx/agentic-rtk/releases"><img src="https://img.shields.io/github/v/release/php-workx/agentic-rtk" alt="Release"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   <a href="https://discord.gg/RySmvNF5kF"><img src="https://img.shields.io/discord/1470188214710046894?label=Discord&logo=discord" alt="Discord"></a>
   <a href="https://formulae.brew.sh/formula/rtk"><img src="https://img.shields.io/homebrew/v/rtk" alt="Homebrew"></a>
@@ -72,6 +72,15 @@ When a compressor delivers savings, RTK tags the command in the local SQLite dat
 > **Example:** `rtk gain --by-feature`  
 > `pkg-install`: 1,240 commands, 890K tokens saved, 72% avg  
 > `stacktrace`: 312 commands, 410K tokens saved, 68% avg
+
+### New in this fork
+
+| Feature | What changed |
+|---------|-------------|
+| **xcodebuild rewrite** | `rtk xcodebuild` is now recognized and rewritten into compact output |
+| **Unicode-safe JSON truncation** | `rtk json` no longer splits multi-byte characters mid-glyph |
+| **curl URL allowlist** | Configure allowed domains in `config.toml` to bypass schema-mode rewrite |
+| **`--json` flag for vitest, jest & playwright** | Machine-readable JSON envelopes for orchestrators and CI parsers |
 
 ## Token Savings (30-min Claude Code Session)
 
@@ -141,10 +150,11 @@ rtk gain        # Should show token savings stats
 
 ```bash
 # 1. Install for your AI tool
-rtk init -g                     # Claude Code / Copilot (default)
+rtk init -g                     # Claude Code (default)
 rtk init -g --gemini            # Gemini CLI
 rtk init -g --codex             # Codex (OpenAI)
 rtk init -g --agent cursor      # Cursor
+rtk init --copilot              # Copilot
 rtk init --agent windsurf       # Windsurf
 rtk init --agent cline          # Cline / Roo Code
 rtk init --agent kilocode       # Kilo Code
@@ -234,6 +244,7 @@ rtk cargo clippy                # Cargo clippy (-80%)
 rtk ruff check                  # Python linting (JSON, -80%)
 rtk golangci-lint run           # Go linting (JSON, -85%)
 rtk rubocop                     # Ruby linting (JSON, -60%+)
+rtk xcodebuild                  # iOS/macOS build output compact
 ```
 
 ### Package Managers
@@ -270,11 +281,11 @@ rtk kubectl services            # Compact service list
 
 ### Data & Analytics
 ```bash
-rtk json config.json            # Structure without values
+rtk json config.json            # Structure without values (Unicode-aware truncation)
 rtk deps                        # Dependencies summary
 rtk env -f AWS                  # Filtered env vars
 rtk log app.log                 # Deduplicated logs
-rtk curl <url>                  # Truncate + save full output
+rtk curl <url>                  # Truncate + save full output (respects URL allowlist)
 rtk wget <url>                  # Download, strip progress bars
 rtk web <url>                   # Extract readable web page text
 rtk summary <long command>      # Heuristic summary
@@ -300,6 +311,42 @@ rtk session                     # Show RTK adoption across recent sessions
 ```bash
 -u, --ultra-compact    # ASCII icons, inline format (extra token savings)
 -v, --verbose          # Increase verbosity (-v, -vv, -vvv)
+    --json             # Machine-readable JSON envelope (full/degraded tiers untruncated; passthrough `raw` may be truncated)
+```
+
+### JSON output for programmatic consumers
+
+The `--json` flag emits a stable JSON envelope on stdout instead of the human formatter. For `full` and `degraded` tiers it bypasses the top-N truncation that compact mode applies (e.g. `take(5)` for failures), which makes it suitable for orchestrators, CI parsers, and downstream tools that need every item. For the `passthrough` tier (parser fallback) the envelope's `raw` field is still truncated to `passthrough_max_chars` per the envelope contract.
+
+`--json` conflicts with `-v` / `--verbose` and `--ultra-compact` (clap rejects with exit code 2).
+
+**Currently supported by:** `vitest`, `jest`, `playwright`. Other tools (`tsc`, `lint`, `prettier`, `prisma`, `next`) keep their human formatters; JSON support for them is tracked as follow-up work.
+
+**Envelope shape:**
+
+```jsonc
+{
+  "tool": "<tool-name>",          // e.g. "vitest", "playwright"
+  "tier": "full" | "degraded" | "passthrough",
+  "exit": <i32>,                  // underlying tool's exit code
+  "data": <T>,                    // present iff tier ∈ {full, degraded}
+  "warnings": ["…"],              // present iff tier == degraded
+  "raw": "<truncated string>"     // present iff tier == passthrough
+}
+```
+
+**Examples:**
+
+```bash
+rtk --json vitest                         # full vitest TestResult, all failures
+rtk --json playwright test                # full playwright TestResult, all suites
+rtk --json jest                           # jest, same envelope as vitest
+```
+
+Pipe directly into `jq` for filtering:
+
+```bash
+rtk --json vitest | jq '.data.failures[] | {test_name, file_path}'
 ```
 
 ## Examples
@@ -395,8 +442,8 @@ RTK supports 12 AI coding tools. Each integration transparently rewrites shell c
 | Tool | Install | Method |
 |------|---------|--------|
 | **Claude Code** | `rtk init -g` | PreToolUse hook (bash) |
-| **GitHub Copilot (VS Code)** | `rtk init -g --copilot` | PreToolUse hook — transparent rewrite |
-| **GitHub Copilot CLI** | `rtk init -g --copilot` | PreToolUse deny-with-suggestion (CLI limitation) |
+| **GitHub Copilot (VS Code)** | `rtk init --copilot` | PreToolUse hook — transparent rewrite |
+| **GitHub Copilot CLI** | `rtk init --copilot` | PreToolUse deny-with-suggestion (CLI limitation) |
 | **Cursor** | `rtk init -g --agent cursor` | preToolUse hook (hooks.json) |
 | **Gemini CLI** | `rtk init -g --gemini` | BeforeTool hook |
 | **Codex** | `rtk init -g --codex` | AGENTS.md + RTK.md instructions |
@@ -404,7 +451,6 @@ RTK supports 12 AI coding tools. Each integration transparently rewrites shell c
 | **Cline / Roo Code** | `rtk init --agent cline` | .clinerules (project-scoped) |
 | **OpenCode** | `rtk init -g --opencode` | Plugin TS (tool.execute.before) |
 | **OpenClaw** | `openclaw plugins install ./openclaw` | Plugin TS (before_tool_call) |
-| **Mistral Vibe** | Planned ([#800](https://github.com/rtk-ai/rtk/issues/800)) | Blocked on upstream |
 | **Kilo Code** | `rtk init --agent kilocode` | .kilocode/rules/rtk-rules.md (project-scoped) |
 | **Google Antigravity** | `rtk init --agent antigravity` | .agents/rules/antigravity-rtk-rules.md (project-scoped) |
 
@@ -483,26 +529,6 @@ rtk telemetry forget     # Withdraw consent + delete all local data + request se
 ```bash
 export RTK_TELEMETRY_DISABLED=1   # Blocks telemetry regardless of consent
 ```
-
-## Star History
-
-<a href="https://www.star-history.com/?repos=rtk-ai%2Frtk&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=rtk-ai/rtk&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=rtk-ai/rtk&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=rtk-ai/rtk&type=date&legend=top-left" />
- </picture>
-</a>
-
-## StarMapper
-
-<a href="https://starmapper.bruniaux.com/rtk-ai/rtk">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://starmapper.bruniaux.com/api/map-image/rtk-ai/rtk?theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://starmapper.bruniaux.com/api/map-image/rtk-ai/rtk?theme=light" />
-    <img alt="StarMapper" src="https://starmapper.bruniaux.com/api/map-image/rtk-ai/rtk" />
-  </picture>
-</a>
 
 ## Core team
 
