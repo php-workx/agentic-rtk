@@ -1,10 +1,13 @@
 // AGENTIC-RTK-FORK: This file contains fork-specific modifications. See FORK.md.
 
 use anyhow::{Context, Result};
-use regex::Regex;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
+
+// FORK: gate regex import to tests-only to avoid dead-code warnings in prod
+#[cfg(test)]
+use regex::Regex;
 
 pub trait StreamFilter {
     fn feed_line(&mut self, line: &str) -> Option<String>;
@@ -85,7 +88,8 @@ impl<H: BlockHandler> StreamFilter for BlockStreamFilter<H> {
     }
 }
 
-#[allow(dead_code)] // available for command modules; currently used in tests only
+// FORK: test-only helper, gated behind #[cfg(test)] — not available in prod builds
+#[cfg(test)]
 pub struct RegexBlockFilter {
     start_re: Regex,
     skip_prefixes: Vec<String>,
@@ -93,6 +97,8 @@ pub struct RegexBlockFilter {
     block_count: usize,
 }
 
+// FORK: gate RegexBlockFilter impl to tests-only
+#[cfg(test)]
 impl RegexBlockFilter {
     #[allow(dead_code)]
     pub fn new(tool_name: &str, start_pattern: &str) -> Self {
@@ -106,13 +112,11 @@ impl RegexBlockFilter {
         }
     }
 
-    #[allow(dead_code)]
     pub fn skip_prefix(mut self, prefix: &str) -> Self {
         self.skip_prefixes.push(prefix.to_string());
         self
     }
 
-    #[allow(dead_code)]
     pub fn skip_prefixes(mut self, prefixes: &[&str]) -> Self {
         self.skip_prefixes
             .extend(prefixes.iter().map(|s| s.to_string()));
@@ -120,6 +124,8 @@ impl RegexBlockFilter {
     }
 }
 
+// FORK: gate BlockHandler impl to tests-only
+#[cfg(test)]
 impl BlockHandler for RegexBlockFilter {
     fn should_skip(&mut self, line: &str) -> bool {
         self.skip_prefixes.iter().any(|p| line.starts_with(p))
@@ -155,28 +161,6 @@ pub trait StdinFilter: Send {
     fn flush(&mut self) -> String;
 }
 
-#[allow(dead_code)] // test utility: wraps closures as StreamFilter
-pub struct LineFilter<F: FnMut(&str) -> Option<String>> {
-    f: F,
-}
-
-#[allow(dead_code)]
-impl<F: FnMut(&str) -> Option<String>> LineFilter<F> {
-    pub fn new(f: F) -> Self {
-        Self { f }
-    }
-}
-
-impl<F: FnMut(&str) -> Option<String>> StreamFilter for LineFilter<F> {
-    fn feed_line(&mut self, line: &str) -> Option<String> {
-        (self.f)(line)
-    }
-
-    fn flush(&mut self) -> String {
-        String::new()
-    }
-}
-
 pub enum FilterMode<'a> {
     Streaming(Box<dyn StreamFilter + 'a>),
     #[allow(dead_code)]
@@ -201,7 +185,8 @@ pub struct StreamResult {
 }
 
 impl StreamResult {
-    #[allow(dead_code)]
+    // FORK: gate success() to tests-only (was #[allow(dead_code)] in upstream)
+    #[cfg(test)]
     pub fn success(&self) -> bool {
         self.exit_code == 0
     }
@@ -525,6 +510,26 @@ pub fn exec_capture(cmd: &mut Command) -> Result<CaptureResult> {
 pub(crate) mod tests {
     use super::*;
     use std::process::Command;
+
+    struct LineFilter<F: FnMut(&str) -> Option<String>> {
+        f: F,
+    }
+
+    impl<F: FnMut(&str) -> Option<String>> LineFilter<F> {
+        pub fn new(f: F) -> Self {
+            Self { f }
+        }
+    }
+
+    impl<F: FnMut(&str) -> Option<String>> StreamFilter for LineFilter<F> {
+        fn feed_line(&mut self, line: &str) -> Option<String> {
+            (self.f)(line)
+        }
+
+        fn flush(&mut self) -> String {
+            String::new()
+        }
+    }
 
     #[test]
     fn test_exit_code_zero() {

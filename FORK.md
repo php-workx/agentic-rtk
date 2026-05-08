@@ -90,7 +90,7 @@ These files were created by the fork and do not exist in upstream:
 
 ## Audit
 
-Run the fork audit script before every rebase:
+Run the fork audit script before every merge:
 
 ```bash
 ./scripts/fork-audit
@@ -98,27 +98,97 @@ Run the fork audit script before every rebase:
 
 It cross-checks sentinels against this registry and fails on drift.
 
-## Rebase Workflow
+## Upstream Update Workflow
+
+When a new upstream version is released (e.g., v0.39.0), follow this process:
+
+### 1. Fetch and assess
 
 ```bash
-# 1. Fetch upstream
-git fetch upstream
+git fetch upstream --tags
+gh release view vX.Y.Z --repo rtk-ai/rtk    # get release notes
+git log --oneline v<current>..v<target>          # count commits
+git diff --stat v<current>..v<target>           # scope of changes
+```
 
-# 2. Start rebase
-git rebase upstream/master
+### 2. Merge (not rebase)
 
-# 3. Resolve conflicts (sentinels mark every fork edit)
+Use `--no-commit` to inspect and resolve conflicts before committing:
 
-# 4. Re-delete upstream-only CI workflows if they resurrect
-git rm -f .github/workflows/upstream-only.yml 2>/dev/null || true
+```bash
+git checkout -b adopt/upstream-X.Y.Z
+git merge vX.Y.Z --no-commit
+```
 
-# 5. Verify fork audit still passes
+Rebase rewrites history and makes sentinels harder to track. Merge preserves
+a clear dual-parent commit showing exactly what came from upstream.
+
+### 3. Resolve conflicts
+
+Strategy for each conflict:
+
+- **Accept upstream** for new features/bugfixes (upstream owns that code now)
+- **Preserve fork** additions marked with `// FORK:` or `AGENTIC-RTK-FORK`
+- **Keep both** when upstream and fork changes serve different purposes
+- **Remove fork code** only when upstream supersedes it entirely (same feature,
+  upstream version is the replacement)
+
+Mark every resolution with a brief `// FORK:` note if it's non-obvious why
+fork code was kept or removed.
+
+### 4. Overlap audit (mandatory)
+
+After merge, check whether upstream accepted PRs the fork previously adopted.
+Duplicate code is a merge artifact that compiles but wastes tokens and confuses
+future contributors.
+
+```text
+1. Extract upstream PR numbers from release notes
+2. Cross-reference against fork CHANGELOG "Upstream Adopts" entries
+3. For each overlap:
+   - If code is identical → remove fork's duplicate, upstream owns it now
+   - If code diverged → verify fork variant still adds value; if not, adopt upstream's
+   - If code is additive → keep both (different features)
+4. Remove stale `// FORK:` markers that no longer mark fork-owned code
+5. Remove dead code from merge artifacts (e.g., duplicate passthrough blocks)
+```
+
+### 5. Verify
+
+```bash
+cargo fmt --all && cargo clippy --all-targets && cargo test --workspace
+```
+
+All three must pass before committing. Zero clippy warnings, zero test failures.
+
+### 6. Commit and update CHANGELOG
+
+```bash
+git add -A
+git commit    # message: "adopt: merge upstream vX.Y.Z into fork"
+```
+
+The CHANGELOG already contains the upstream version section from the merge.
+Add a brief fork note if any fork-specific resolution was non-trivial.
+
+### 7. Verify fork audit
+
+```bash
 ./scripts/fork-audit
+```
 
-# 6. Build and test
-cargo test
+Ensures sentinels and this registry are still in sync after the merge.
 
-# 7. Verify both modes work (fork features on and off)
+### 8. Verify both modes
+
+```bash
 RTK_POSTPROCESS=0 cargo test  # upstream-like mode
 RTK_POSTPROCESS=1 cargo test  # fork mode
+```
+
+### 9. Push and PR
+
+```bash
+git push -u origin adopt/upstream-X.Y.Z
+gh pr create --title "adopt: merge upstream vX.Y.Z" --base develop
 ```

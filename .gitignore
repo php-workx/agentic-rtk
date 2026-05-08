@@ -51,3 +51,6 @@ claudedocs
 
 .serena
 package-lock.json
+
+# AgentOps session artifacts (auto-added)
+.agents/

@@ -102,7 +102,19 @@ pub fn run(args: &[String], verbose: u8) -> Result<i32> {
         "ls",
         &format!("-la {}", target_display),
         |raw| {
-            let (entries, summary) = compact_ls(raw, show_all, show_long);
+            let (entries, summary, parsed_count) = compact_ls(raw, show_all, show_long);
+
+            // If no lines were parsed (e.g., unrecognized locale), fall back to raw output.
+            // This is safer than returning "(empty)" for a non-empty directory.
+            // Note: compact_ls has its own internal fallback for parse failures; this
+            // caller-side check is a secondary safety net for edge cases the internal
+            // fallback doesn't cover.
+            let has_real_content = raw
+                .lines()
+                .any(|l| !l.starts_with("total ") && !l.is_empty() && !is_dotdir(l));
+            if parsed_count == 0 && has_real_content && (entries.is_empty() || entries == "(empty)\n") {
+                return raw.to_string();
+            }
 
             // Only show summary in interactive mode (not when piped)
             let is_tty = std::io::stdout().is_terminal();
@@ -114,7 +126,7 @@ pub fn run(args: &[String], verbose: u8) -> Result<i32> {
 
             if verbose > 0 {
                 eprintln!(
-                    "Chars: {} → {} ({}% reduction)",
+                    "Chars: {} -> {} ({}% reduction)",
                     raw.len(),
                     filtered.len(),
                     if !raw.is_empty() {
@@ -154,6 +166,11 @@ fn human_size(bytes: u64) -> String {
 /// filename (everything after the date). This handles owner/group names that
 /// contain spaces, which break the old fixed-column approach.
 fn parse_ls_line(line: &str) -> Option<(char, String, u64, String)> {
+    // Skip . and .. entries before date parsing (works for non-English locales too)
+    if is_dotdir(line) {
+        return None;
+    }
+
     let date_match = LS_DATE_RE.find(line)?;
     let name = line[date_match.end()..].to_string();
 
@@ -178,6 +195,23 @@ fn parse_ls_line(line: &str) -> Option<(char, String, u64, String)> {
     }
 
     Some((file_type, perms, size, name))
+}
+
+/// Returns true if the line represents a . or .. directory entry.
+///
+/// POSIX.1-2017 (IEEE Std 1003.1) specifies that each directory contains
+/// entries for "." (the directory itself) and ".." (its parent). These entries
+/// always appear in `ls -la` output and are skipped during parsing since they
+/// carry no meaningful content for token reduction.
+// FORK: Use exact last-token match instead of suffix check to avoid
+// misclassifying filenames like "report." or "archive.." as dotdirs.
+fn is_dotdir(line: &str) -> bool {
+    let trimmed = line.trim();
+    // Symlinks have " -> " — they're never dotdir entries
+    if trimmed.contains(" -> ") {
+        return false;
+    }
+    matches!(trimmed.split_whitespace().next_back(), Some(".") | Some(".."))
 }
 
 /// Convert an `ls`-style permission string (e.g. `-rw-r--r--`, `drwxr-xr-x`,
@@ -230,13 +264,18 @@ fn perms_to_octal(perms: &str) -> String {
 ///   755  name/        (dirs)
 ///   644  name  size   (files)
 ///
-/// Returns (entries, summary) so caller can suppress summary when piped.
-fn compact_ls(raw: &str, show_all: bool, show_long: bool) -> (String, String) {
+/// Returns (entries, summary, parsed_count) so caller can suppress summary when piped.
+/// parsed_count tracks how many non-header lines were successfully parsed.
+/// If parsed_count == 0 but raw had content, caller should fall back to raw output.
+fn compact_ls(raw: &str, show_all: bool, show_long: bool) -> (String, String, usize) {
     use std::collections::HashMap;
 
     let mut dirs: Vec<(String, String)> = Vec::new(); // (name, octal_perms)
     let mut files: Vec<(String, String, String)> = Vec::new(); // (name, size, octal_perms)
     let mut by_ext: HashMap<String, usize> = HashMap::new();
+    let mut lines_seen: usize = 0;
+    let mut parsed_count: usize = 0;
+    let mut dotdirs: usize = 0;
 
     // Track parser hit-rate so we can fall back to raw output when every
     // non-trivial line fails (e.g. localized ls output that escapes LC_ALL).
@@ -247,17 +286,23 @@ fn compact_ls(raw: &str, show_all: bool, show_long: bool) -> (String, String) {
         if line.starts_with("total ") || line.is_empty() {
             continue;
         }
+        lines_seen += 1;
+
+        // Skip . and .. entries before parse tracking — they are intentionally
+        // filtered, not parse failures, so they must not pollute the fallback
+        // counter. This ensures a directory containing only . and .. is reported
+        // as "(empty)" rather than triggering the raw-output fallback.
+        if is_dotdir(line) {
+            dotdirs += 1;
+            continue;
+        }
 
         parse_attempts += 1;
         let Some((file_type, perms, size, name)) = parse_ls_line(line) else {
             parse_failures += 1;
             continue;
         };
-
-        // Skip . and ..
-        if name == "." || name == ".." {
-            continue;
-        }
+        parsed_count += 1;
 
         // Filter noise dirs unless -a
         if !show_all && NOISE_DIRS.iter().any(|noise| name == *noise) {
@@ -268,7 +313,8 @@ fn compact_ls(raw: &str, show_all: bool, show_long: bool) -> (String, String) {
 
         if file_type == 'd' {
             dirs.push((name, octal));
-        } else if file_type == '-' || file_type == 'l' {
+        } else {
+            // Regular files, symlinks, character/block devices, pipes, sockets
             let ext = if let Some(pos) = name.rfind('.') {
                 name[pos..].to_string()
             } else {
@@ -285,7 +331,7 @@ fn compact_ls(raw: &str, show_all: bool, show_long: bool) -> (String, String) {
     // strip dotfile lines so the visible output matches what they asked for.
     if parse_attempts > 0 && parse_failures == parse_attempts {
         if show_all {
-            return (raw.to_string(), String::new());
+            return (raw.to_string(), String::new(), 0);
         }
         let mut kept: Vec<&str> = Vec::new();
         for line in raw.lines() {
@@ -308,11 +354,19 @@ fn compact_ls(raw: &str, show_all: bool, show_long: bool) -> (String, String) {
         } else {
             format!("{}\n", filtered)
         };
-        return (result, String::new());
+        return (result, String::new(), 0);
     }
 
     if dirs.is_empty() && files.is_empty() {
-        return ("(empty)\n".to_string(), String::new());
+        if lines_seen > 0 && parsed_count == 0 {
+            if dotdirs == lines_seen {
+                // Only . and .. entries (empty directory)
+                return ("(empty)\n".to_string(), String::new(), 0);
+            }
+            // Real content that couldn't be parsed (e.g., non-English locale)
+            return (String::new(), String::new(), 0);
+        }
+        return ("(empty)\n".to_string(), String::new(), 0);
     }
 
     let mut entries = String::new();
@@ -358,7 +412,7 @@ fn compact_ls(raw: &str, show_all: bool, show_long: bool) -> (String, String) {
     }
     summary.push('\n');
 
-    (entries, summary)
+    (entries, summary, parsed_count)
 }
 
 #[cfg(test)]
@@ -373,7 +427,7 @@ mod tests {
                      drwxr-xr-x  2 user  staff    64 Jan  1 12:00 src\n\
                      -rw-r--r--  1 user  staff  1234 Jan  1 12:00 Cargo.toml\n\
                      -rw-r--r--  1 user  staff  5678 Jan  1 12:00 README.md\n";
-        let (entries, _summary) = compact_ls(input, false, false);
+        let (entries, _summary, _) = compact_ls(input, false, false);
         assert!(entries.contains("src/"));
         assert!(entries.contains("Cargo.toml"));
         assert!(entries.contains("README.md"));
@@ -394,7 +448,7 @@ mod tests {
                      drwxr-xr-x  2 user  staff  64 Jan  1 12:00 target\n\
                      drwxr-xr-x  2 user  staff  64 Jan  1 12:00 src\n\
                      -rw-r--r--  1 user  staff  100 Jan  1 12:00 main.rs\n";
-        let (entries, _summary) = compact_ls(input, false, false);
+        let (entries, _summary, _) = compact_ls(input, false, false);
         assert!(!entries.contains("node_modules"));
         assert!(!entries.contains(".git"));
         assert!(!entries.contains("target"));
@@ -407,7 +461,7 @@ mod tests {
         let input = "total 8\n\
                      drwxr-xr-x  2 user  staff  64 Jan  1 12:00 .git\n\
                      drwxr-xr-x  2 user  staff  64 Jan  1 12:00 src\n";
-        let (entries, _summary) = compact_ls(input, true, false);
+        let (entries, _summary, _) = compact_ls(input, true, false);
         assert!(entries.contains(".git/"));
         assert!(entries.contains("src/"));
     }
@@ -415,7 +469,32 @@ mod tests {
     #[test]
     fn test_compact_empty() {
         let input = "total 0\n";
-        let (entries, summary) = compact_ls(input, false, false);
+        let (entries, summary, _) = compact_ls(input, false, false);
+        assert_eq!(entries, "(empty)\n");
+        assert!(summary.is_empty());
+    }
+
+    #[test]
+    fn test_compact_empty_chinese_locale() {
+        let input = "total 8\n\
+                     drwxr-xr-x  2 user user  4096  1\u{6708}  1 12:00 .\n\
+                     drwxr-xr-x  16 user user 20480  1\u{6708}  1 12:00 ..\n";
+        // . and .. are identified as dotdirs (ends with '.' / '..') and skipped
+        // before parse tracking, so the internal fallback doesn't trigger.
+        // The directory is effectively empty.
+        let (entries, summary, parsed_count) = compact_ls(input, false, false);
+        assert_eq!(parsed_count, 0);
+        assert_eq!(entries, "(empty)\n");
+        assert!(summary.is_empty());
+    }
+
+    #[test]
+    fn test_compact_empty_english_locale() {
+        let input = "total 0\n\
+                     drwxr-xr-x  2 lumin  wheel  64 Apr 23 00:37 .\n\
+                     drwxr-xr-x  16 root  wheel 164576 Apr 23 00:37 ..\n";
+        let (entries, summary, parsed_count) = compact_ls(input, false, false);
+        assert_eq!(parsed_count, 0);
         assert_eq!(entries, "(empty)\n");
         assert!(summary.is_empty());
     }
@@ -427,7 +506,7 @@ mod tests {
                      -rw-r--r--  1 user  staff  1234 Jan  1 12:00 main.rs\n\
                      -rw-r--r--  1 user  staff  5678 Jan  1 12:00 lib.rs\n\
                      -rw-r--r--  1 user  staff   100 Jan  1 12:00 Cargo.toml\n";
-        let (_entries, summary) = compact_ls(input, false, false);
+        let (_entries, summary, _) = compact_ls(input, false, false);
         assert!(summary.contains("Summary: 3 files, 1 dirs"));
         assert!(summary.contains(".rs"));
         assert!(summary.contains(".toml"));
@@ -447,7 +526,7 @@ mod tests {
     fn test_compact_handles_filenames_with_spaces() {
         let input = "total 8\n\
                      -rw-r--r--  1 user  staff  1234 Jan  1 12:00 my file.txt\n";
-        let (entries, _summary) = compact_ls(input, false, false);
+        let (entries, _summary, _) = compact_ls(input, false, false);
         assert!(entries.contains("my file.txt"));
     }
 
@@ -455,7 +534,7 @@ mod tests {
     fn test_compact_symlinks() {
         let input = "total 8\n\
                      lrwxr-xr-x  1 user  staff  10 Jan  1 12:00 link -> target\n";
-        let (entries, _summary) = compact_ls(input, false, false);
+        let (entries, _summary, _) = compact_ls(input, false, false);
         assert!(entries.contains("link -> target"));
     }
 
@@ -465,7 +544,7 @@ mod tests {
         let input = "total 48\n\
                      drwxr-xr-x  2 user  staff    64 Jan  1 12:00 src\n\
                      -rw-r--r--  1 user  staff  1234 Jan  1 12:00 main.rs\n";
-        let (entries, summary) = compact_ls(input, false, false);
+        let (entries, summary, _) = compact_ls(input, false, false);
         assert!(
             !entries.contains("Summary:"),
             "entries must not contain summary"
@@ -484,7 +563,7 @@ mod tests {
                      drwxr-xr-x  2 user  staff    64 Jan  1 12:00 src\n\
                      -rw-r--r--  1 user  staff  1234 Jan  1 12:00 main.rs\n\
                      -rw-r--r--  1 user  staff  5678 Jan  1 12:00 lib.rs\n";
-        let (entries, _summary) = compact_ls(input, false, false);
+        let (entries, _summary, _) = compact_ls(input, false, false);
         let line_count = entries.lines().count();
         assert_eq!(
             line_count, 3,
@@ -499,7 +578,7 @@ mod tests {
         let input = "total 8\n\
                      -rw-r--r--  1 fjeanne utilisa. du domaine    0 Mar 31 16:18 empty.txt\n\
                      -rw-r--r--  1 fjeanne utilisa. du domaine 1234 Mar 31 16:18 data.json\n";
-        let (entries, _summary) = compact_ls(input, false, false);
+        let (entries, _summary, _) = compact_ls(input, false, false);
         assert!(
             entries.contains("empty.txt"),
             "should contain 'empty.txt', got: {entries}"
@@ -527,15 +606,12 @@ mod tests {
         // Some systems show year instead of time for old files
         let input = "total 8\n\
                      -rw-r--r--  1 user staff  5678 Dec 25  2024 archive.tar\n";
-        let (entries, _summary) = compact_ls(input, false, false);
+        let (entries, _summary, _) = compact_ls(input, false, false);
         assert!(
             entries.contains("archive.tar"),
             "should contain filename, got: {entries}"
         );
-        assert!(
-            entries.contains("5.5K"),
-            "should show 5.5K, got: {entries}"
-        );
+        assert!(entries.contains("5.5K"), "should show 5.5K, got: {entries}");
     }
 
     #[test]
@@ -584,6 +660,40 @@ mod tests {
     }
 
     #[test]
+    fn test_compact_device_files() {
+        // Regression test for #844: `rtk ls /dev/ttyACM*` returned "(empty)"
+        // because character devices (type 'c') were not handled by compact_ls.
+        let input = "crw-rw----  1 root  dialout  166, 0 Apr 22 09:46 /dev/ttyACM0\n";
+        let (entries, _summary, _parsed) = compact_ls(input, false, false);
+        assert!(
+            entries.contains("/dev/ttyACM0"),
+            "should contain device file, got: {entries}"
+        );
+        assert!(!entries.contains("(empty)"), "should not be empty");
+    }
+
+    #[test]
+    fn test_compact_device_files_macos_hex_size() {
+        // macOS shows device major/minor as hex (e.g. 0x2000000)
+        let input = "crw-rw-rw-  1 root  wheel  0x2000000 Mar 31 19:25 /dev/tty\n";
+        let (entries, _summary, _parsed) = compact_ls(input, false, false);
+        assert!(
+            entries.contains("/dev/tty"),
+            "should contain device file, got: {entries}"
+        );
+    }
+
+    #[test]
+    fn test_compact_block_device() {
+        let input = "brw-rw----  1 root  disk  8, 0 Apr 22 09:46 /dev/sda\n";
+        let (entries, _summary, _parsed) = compact_ls(input, false, false);
+        assert!(
+            entries.contains("/dev/sda"),
+            "should contain block device, got: {entries}"
+        );
+    }
+
+    #[test]
     fn test_parse_ls_line_returns_none_for_total() {
         assert!(parse_ls_line("total 48").is_none());
     }
@@ -601,7 +711,7 @@ mod tests {
         let italian_input = "totale 8\n\
                              drwxr-xr-x  2 user user 4096 30 apr 14.54 src\n\
                              -rw-r--r--  1 user user 1234 30 apr 14.54 main.rs\n";
-        let (entries, _summary) = compact_ls(italian_input, false, false);
+        let (entries, _summary, _) = compact_ls(italian_input, false, false);
         assert_eq!(
             entries, italian_input,
             "fully-failed parse should pass the original ls output through"
@@ -658,7 +768,7 @@ mod tests {
                      drwxr-xr-x  2 user  staff    64 Jan  1 12:00 src\n\
                      -rw-r--r--  1 user  staff  1234 Jan  1 12:00 Cargo.toml\n\
                      -rwxr-xr-x  1 user  staff   500 Jan  1 12:00 build.sh\n";
-        let (entries, _summary) = compact_ls(input, false, true);
+        let (entries, _summary, _) = compact_ls(input, false, true);
         assert!(
             entries.contains("755  src/"),
             "dir should be prefixed with octal perms, got: {entries}"
@@ -679,7 +789,7 @@ mod tests {
         // under the hood.
         let input = "total 48\n\
                      -rw-r--r--  1 user  staff  1234 Jan  1 12:00 Cargo.toml\n";
-        let (entries, _summary) = compact_ls(input, false, false);
+        let (entries, _summary, _) = compact_ls(input, false, false);
         assert!(
             !entries.contains("644"),
             "short format must not include octal perms, got: {entries}"
@@ -687,6 +797,22 @@ mod tests {
         assert!(entries.contains("Cargo.toml"));
     }
 
+    #[test]
+    fn test_compact_chinese_locale_fallback() {
+        // Chinese-locale ls output with real files that can't be parsed.
+        // The internal fallback returns filtered raw output instead of
+        // empty output, preserving data visibility.
+        let input = "total 8\n\
+                      drwxr-xr-x  2 user staff  64  1\u{6708}  1 12:00 src\n\
+                      -rw-r--r--  1 user staff 1234  1\u{6708}  1 12:00 main.rs\n";
+        let (entries, summary, parsed_count) = compact_ls(input, false, false);
+        assert_eq!(parsed_count, 0);
+        // Internal fallback returns filtered raw output (non-empty) since
+        // all non-dotdir lines failed to parse (Chinese locale dates).
+        // This is better than returning empty output which would hide data.
+        assert!(!entries.is_empty());
+        assert!(summary.is_empty());
+    }
 
     fn count_tokens(s: &str) -> usize {
         s.split_whitespace().count()

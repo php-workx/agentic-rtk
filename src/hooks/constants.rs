@@ -23,6 +23,11 @@ pub const CODEX_SESSION_HOOK_COMMAND: &str = "rtk session hook --agent codex --e
 /// Native Rust hook command for Cursor (replaces rtk-rewrite.sh).
 pub const CURSOR_HOOK_COMMAND: &str = "rtk hook cursor";
 
+pub const CONFIG_DIR: &str = ".config";
+pub const OPENCODE_SUBDIR: &str = "opencode";
+pub const PLUGIN_SUBDIR: &str = "plugins";
+pub const OPENCODE_PLUGIN_FILE: &str = "rtk.ts";
+// FORK: Convenience alias combining upstream's component constants for fork-only usage.
 #[allow(dead_code)]
 pub const OPENCODE_PLUGIN_PATH: &str = ".config/opencode/plugins/rtk.ts";
 #[allow(dead_code)]

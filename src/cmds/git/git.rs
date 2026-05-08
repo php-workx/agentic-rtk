@@ -35,6 +35,17 @@ fn git_cmd(global_args: &[String]) -> Command {
     cmd
 }
 
+/// Create a git Command for internal parsing that must be locale-stable.
+///
+/// We only use this for non-user-facing parses where RTK depends on git's
+/// English status phrases. User-visible passthrough output keeps the user's
+/// locale.
+fn git_cmd_c_locale(global_args: &[String]) -> Command {
+    let mut cmd = git_cmd(global_args);
+    cmd.env("LC_ALL", "C");
+    cmd
+}
+
 pub fn run(
     cmd: GitCommand,
     args: &[String],
@@ -801,6 +812,104 @@ pub(crate) fn format_status_output(porcelain: &str) -> String {
     output.trim_end().to_string()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitStatusState {
+    Rebase,
+    MergeConflicts,
+    MergeReadyToCommit,
+    CherryPick,
+    Revert,
+    Bisect,
+    Am,
+    SparseCheckout,
+}
+
+impl GitStatusState {
+    fn summary(self) -> &'static str {
+        match self {
+            Self::Rebase => "rebase in progress",
+            Self::MergeConflicts => "merge in progress. unresolved conflicts",
+            Self::MergeReadyToCommit => "merge in progress. no conflicts",
+            Self::CherryPick => "cherry-pick in progress",
+            Self::Revert => "revert in progress",
+            Self::Bisect => "bisect in progress",
+            Self::Am => "am session in progress",
+            Self::SparseCheckout => "sparse checkout enabled",
+        }
+    }
+}
+
+const REBASE_INDICATORS: &[&str] = &[
+    "rebase in progress",
+    "You are currently rebasing",
+    "You are currently editing",
+    "You are currently splitting",
+    "Last command done",
+    "Next command to do",
+    "No commands remaining",
+];
+
+fn detect_status_state(line: &str) -> Option<GitStatusState> {
+    if line.contains("All conflicts fixed but you are still merging") {
+        Some(GitStatusState::MergeReadyToCommit)
+    } else if line.contains("You have unmerged paths") {
+        Some(GitStatusState::MergeConflicts)
+    } else if line.contains("You are currently cherry-picking") {
+        Some(GitStatusState::CherryPick)
+    } else if line.contains("You are currently reverting") {
+        Some(GitStatusState::Revert)
+    } else if line.contains("You are currently bisecting") {
+        Some(GitStatusState::Bisect)
+    } else if line.contains("You are in the middle of an am session") {
+        Some(GitStatusState::Am)
+    } else if line.contains("You are in a sparse checkout") {
+        Some(GitStatusState::SparseCheckout)
+    } else if REBASE_INDICATORS.iter().any(|i| line.contains(i)) {
+        Some(GitStatusState::Rebase)
+    } else {
+        None
+    }
+}
+
+/// Extract a compact in-progress state summary from plain `git status` output.
+///
+/// Compact mode runs `git status --porcelain -b`, which omits the state header
+/// git prints for rebase / merge / cherry-pick / revert / bisect / am / sparse
+/// checkout. Hiding that block is a correctness bug — e.g. during an interactive
+/// rebase edit, the user sees a "clean" status and misses "You are currently
+/// editing a commit while rebasing ...".
+///
+/// This helper walks the plain-status output we already capture for tracking
+/// and emits a compact, RTK-style summary rather than dumping git's full prose.
+/// Returns `None` when no state is in progress.
+fn extract_state_header(raw: &str) -> Option<String> {
+    // Headers of the file-change blocks — everything relevant to state appears
+    // above these in git's output, so they double as a terminator.
+    const STOPPERS: &[&str] = &[
+        "Changes to be committed:",
+        "Changes not staged for commit:",
+        "Untracked files:",
+        "Unmerged paths:",
+        "no changes added to commit",
+        "nothing to commit",
+        "nothing added to commit",
+    ];
+
+    for line in raw.lines() {
+        let stripped = line.trim();
+
+        if STOPPERS.iter().any(|s| stripped.starts_with(s)) {
+            break;
+        }
+
+        if let Some(state) = detect_status_state(stripped) {
+            return Some(state.summary().to_string());
+        }
+    }
+
+    None
+}
+
 /// Minimal filtering for git status with user-provided args
 fn filter_status_with_args(output: &str) -> String {
     let mut result = Vec::new();
@@ -880,7 +989,7 @@ fn run_status(args: &[String], verbose: u8, global_args: &[String]) -> Result<i3
 
     // Default RTK compact mode (no args provided)
     // Get raw git status for tracking
-    let mut raw_cmd = git_cmd(global_args);
+    let mut raw_cmd = git_cmd_c_locale(global_args);
     raw_cmd.args(["status"]);
     let raw_output = exec_capture(&mut raw_cmd)
         .map(|r| r.stdout)
@@ -899,10 +1008,18 @@ fn run_status(args: &[String], verbose: u8, global_args: &[String]) -> Result<i3
 
     let formatted = format_status_output(&result.stdout);
 
-    println!("{}", formatted);
+    // Surface in-progress state (rebase/merge/cherry-pick/bisect/am) from the
+    // plain-status output we already captured for tracking. Porcelain omits it
+    // and hiding it misleads the user about the true repo state.
+    let final_output = match extract_state_header(&raw_output) {
+        Some(state) => format!("{}\n{}", state, formatted),
+        None => formatted,
+    };
+
+    println!("{}", final_output);
 
     // Track for statistics
-    timer.track("git status", "rtk git status", &raw_output, &formatted);
+    timer.track("git status", "rtk git status", &raw_output, &final_output);
 
     Ok(0)
 }
@@ -1461,24 +1578,13 @@ fn run_fetch(args: &[String], verbose: u8, global_args: &[String]) -> Result<i32
 }
 
 /// Format status message for stash operations.
-/// - `create`: returns the raw object id git emitted (callers consume it).
-/// - `push`/`save` (or any pathspec-prefixed push): checks for "No local changes".
-/// - Other subcommands: "ok stash <subcommand>".
+/// - For create operations (push/save): checks for "No local changes"
+/// - For other operations: uses "ok stash <subcommand>" format
 fn format_stash_message(subcommand: Option<&str>, result: &CaptureResult) -> String {
     match subcommand {
-        // `git stash create` prints a SHA-1 on success that callers can stash@{...}
-        // against. Preserve it verbatim instead of replacing with "ok stash create".
-        Some("create") => {
-            let trimmed = result.stdout.trim();
-            if trimmed.is_empty() {
-                "ok (nothing to stash)".to_string()
-            } else {
-                trimmed.to_string()
-            }
-        }
         None | Some("push") | Some("save") => {
             // Create operations check for "no local changes"
-            if stash_push_is_noop(&result.combined()) {
+            if result.stdout.contains("No local changes") {
                 "ok (nothing to stash)".to_string()
             } else {
                 "ok stashed".to_string()
@@ -1506,23 +1612,6 @@ fn run_stash(
             cmd.args(["stash", "list"]);
             let result = exec_capture(&mut cmd).context("Failed to run git stash list")?;
 
-            // Fall back to raw output on git failure — never synthesize a
-            // success message ("No stashes") when git itself errored.
-            if !result.success() {
-                eprintln!("FAILED: git stash list");
-                let combined = result.combined();
-                if !result.stderr.trim().is_empty() {
-                    eprintln!("{}", result.stderr);
-                }
-                timer.track(
-                    "git stash list",
-                    "rtk git stash list",
-                    &combined,
-                    &combined,
-                );
-                return Ok(result.exit_code);
-            }
-
             if result.stdout.trim().is_empty() {
                 let msg = "No stashes";
                 println!("{}", msg);
@@ -1546,23 +1635,6 @@ fn run_stash(
                 cmd.arg(arg);
             }
             let result = exec_capture(&mut cmd).context("Failed to run git stash show")?;
-
-            // Fall back to raw output on git failure — never synthesize
-            // "Empty stash" when git itself errored.
-            if !result.success() {
-                eprintln!("FAILED: git stash show");
-                let combined = result.combined();
-                if !result.stderr.trim().is_empty() {
-                    eprintln!("{}", result.stderr);
-                }
-                timer.track(
-                    "git stash show",
-                    "rtk git stash show",
-                    &combined,
-                    &combined,
-                );
-                return Ok(result.exit_code);
-            }
 
             let filtered = if result.stdout.trim().is_empty() {
                 let msg = "Empty stash";
@@ -1662,13 +1734,6 @@ fn run_stash(
     Ok(0)
 }
 
-/// Detect the "git stash push" no-op case where git exits 0 but did not
-/// actually create a stash entry. Covers both an entirely clean tree and
-/// pathspec-restricted invocations whose pathspecs matched nothing.
-fn stash_push_is_noop(combined: &str) -> bool {
-    combined.contains("No local changes to save")
-}
-
 fn filter_stash_list(output: &str) -> String {
     // Format: "stash@{0}: WIP on main: abc1234 commit message"
     let mut result = Vec::new();
@@ -1736,23 +1801,6 @@ fn run_worktree(args: &[String], verbose: u8, global_args: &[String]) -> Result<
     let mut cmd = git_cmd(global_args);
     cmd.args(["worktree", "list"]);
     let result = exec_capture(&mut cmd).context("Failed to run git worktree list")?;
-
-    // Fall back to raw output on git failure — never silently filter and
-    // synthesize success when git itself errored.
-    if !result.success() {
-        eprintln!("FAILED: git worktree list");
-        let combined = result.combined();
-        if !result.stderr.trim().is_empty() {
-            eprintln!("{}", result.stderr);
-        }
-        timer.track(
-            "git worktree list",
-            "rtk git worktree",
-            &combined,
-            &combined,
-        );
-        return Ok(result.exit_code);
-    }
 
     let filtered = filter_worktree_list(&result.stdout);
     println!("{}", filtered);
@@ -1875,6 +1923,21 @@ mod tests {
         let cmd = git_cmd(&global_args);
         let args: Vec<_> = cmd.get_args().collect();
         assert_eq!(args, vec!["--no-pager", "--bare"]);
+    }
+
+    #[test]
+    fn test_git_cmd_c_locale_sets_stable_env() {
+        let cmd = git_cmd_c_locale(&[]);
+        let envs: Vec<_> = cmd
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().to_string(),
+                    value.expect("env value").to_string_lossy().to_string(),
+                )
+            })
+            .collect();
+        assert!(envs.contains(&("LC_ALL".to_string(), "C".to_string())));
     }
 
     #[test]
@@ -2254,25 +2317,6 @@ To https://github.com/example/repo.git
     }
 
     #[test]
-    fn test_stash_push_is_noop_detects_no_local_changes() {
-        // Real `git stash push` output on a clean tree: stdout-only, exit 0.
-        assert!(stash_push_is_noop("No local changes to save\n"));
-        // Same message can appear when restricted by a pathspec that matched nothing.
-        assert!(stash_push_is_noop(
-            "error: pathspec 'missing.txt' did not match any file(s) known to git\nNo local changes to save\n"
-        ));
-    }
-
-    #[test]
-    fn test_stash_push_is_noop_negative_for_real_stash() {
-        // A successful stash creation does not contain the no-op marker.
-        assert!(!stash_push_is_noop(
-            "Saved working directory and index state WIP on main: abc1234 fix login\n"
-        ));
-        assert!(!stash_push_is_noop(""));
-    }
-
-    #[test]
     fn test_filter_stash_list() {
         let output =
             "stash@{0}: WIP on main: abc1234 fix login\nstash@{1}: On feature: def5678 wip\n";
@@ -2296,6 +2340,74 @@ To https://github.com/example/repo.git
         let porcelain = "";
         let result = format_status_output(porcelain);
         assert_eq!(result, "Clean working tree");
+    }
+
+    #[test]
+    fn test_extract_state_header_clean_returns_none() {
+        let raw = "On branch main\nYour branch is up to date with 'origin/main'.\n\nnothing to commit, working tree clean\n";
+        assert_eq!(extract_state_header(raw), None);
+    }
+
+    #[test]
+    fn test_extract_state_header_no_state_with_changes_returns_none() {
+        let raw = "On branch main\nChanges not staged for commit:\n  (use \"git add <file>...\" to update what will be committed)\n\tmodified:   src/main.rs\n\nno changes added to commit\n";
+        assert_eq!(extract_state_header(raw), None);
+    }
+
+    #[test]
+    fn test_extract_state_header_editing_while_rebasing() {
+        let raw = "On branch feature\n\ninteractive rebase in progress; onto abc1234\nLast command done (1 command done):\n   edit abc123 some message\nNo commands remaining.\nYou are currently editing a commit while rebasing branch 'feature' on 'abc1234'.\n  (use \"git commit --amend\" to amend the current commit)\n  (use \"git rebase --continue\" once you are satisfied with your changes)\n\nnothing to commit, working tree clean\n";
+        let out = extract_state_header(raw).expect("state expected");
+        assert_eq!(out, "rebase in progress");
+    }
+
+    #[test]
+    fn test_extract_state_header_merge_unresolved() {
+        let raw = "On branch main\nYou have unmerged paths.\n  (fix conflicts and run \"git commit\")\n  (use \"git merge --abort\" to abort the merge)\n\nUnmerged paths:\n\tboth modified:   src/main.rs\n";
+        let out = extract_state_header(raw).expect("state expected");
+        assert_eq!(out, "merge in progress. unresolved conflicts");
+    }
+
+    #[test]
+    fn test_extract_state_header_cherry_pick() {
+        let raw = "On branch main\n\nYou are currently cherry-picking commit abc1234.\n  (fix conflicts and run \"git cherry-pick --continue\")\n  (use \"git cherry-pick --abort\" to cancel the cherry-pick operation)\n\nnothing to commit, working tree clean\n";
+        let out = extract_state_header(raw).expect("state expected");
+        assert_eq!(out, "cherry-pick in progress");
+    }
+
+    #[test]
+    fn test_extract_state_header_bisect() {
+        let raw = "On branch main\n\nYou are currently bisecting, started from branch 'main'.\n  (use \"git bisect reset\" to get back to the original branch)\n\nnothing to commit, working tree clean\n";
+        let out = extract_state_header(raw).expect("state expected");
+        assert_eq!(out, "bisect in progress");
+    }
+
+    #[test]
+    fn test_extract_state_header_revert() {
+        let raw = "On branch main\n\nYou are currently reverting commit abc1234.\n  (fix conflicts and run \"git revert --continue\")\n  (use \"git revert --abort\" to cancel the revert operation)\n\nnothing to commit, working tree clean\n";
+        let out = extract_state_header(raw).expect("state expected");
+        assert_eq!(out, "revert in progress");
+    }
+
+    #[test]
+    fn test_extract_state_header_merge_in_middle() {
+        let raw = "On branch main\n\nAll conflicts fixed but you are still merging.\n  (use \"git commit\" to conclude merge)\n\nChanges to be committed:\n\tmodified:   src/main.rs\n";
+        let out = extract_state_header(raw).expect("state expected");
+        assert_eq!(out, "merge in progress. no conflicts");
+    }
+
+    #[test]
+    fn test_extract_state_header_am_session() {
+        let raw = "On branch main\n\nYou are in the middle of an am session.\n  (use \"git am --continue\" to continue)\n  (use \"git am --abort\" to restore the original branch)\n\nnothing to commit, working tree clean\n";
+        let out = extract_state_header(raw).expect("state expected");
+        assert_eq!(out, "am session in progress");
+    }
+
+    #[test]
+    fn test_extract_state_header_sparse_checkout() {
+        let raw = "On branch main\n\nYou are in a sparse checkout with 17% of tracked files present.\n\nnothing to commit, working tree clean\n";
+        let out = extract_state_header(raw).expect("state expected");
+        assert_eq!(out, "sparse checkout enabled");
     }
 
     #[test]
