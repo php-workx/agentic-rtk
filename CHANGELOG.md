@@ -5,6 +5,18 @@ All notable changes to rtk (Rust Token Killer) will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.0-workx.1](https://github.com/php-workx/agentic-rtk/releases/tag/v0.39.0-workx.1) (2026-05-08)
+
+### Fork Changes
+
+Adopt upstream v0.39.0 into fork, resolving 9 merge conflicts and performing overlap audit.
+
+* **json:** fix UTF-8 truncation — multibyte strings no longer over-truncated (`char_indices()` replaces `floor_char_boundary`)
+* **ls:** fix dotdir detection — exact matching prevents false positives on filenames like `report.`
+* **cicd:** use dynamic default branch instead of hardcoded `master` in next-release workflow
+* **docs:** FORK.md — replace rebase workflow with merge-based upstream update process
+* **style:** add `// FORK:` markers to shared files; correct test-only visibility comment in stream.rs
+
 ## [0.39.0](https://github.com/rtk-ai/rtk/compare/v0.38.0...v0.39.0) (2026-05-06)
 
 
