@@ -90,7 +90,7 @@ These files were created by the fork and do not exist in upstream:
 
 ## Audit
 
-Run the fork audit script before every rebase:
+Run the fork audit script before every merge:
 
 ```bash
 ./scripts/fork-audit
@@ -190,5 +190,5 @@ RTK_POSTPROCESS=1 cargo test  # fork mode
 
 ```bash
 git push -u origin adopt/upstream-X.Y.Z
-gh pr create --title "adopt: merge upstream vX.Y.Z" --base main
+gh pr create --title "adopt: merge upstream vX.Y.Z" --base develop
 ```

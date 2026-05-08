@@ -469,8 +469,8 @@ mod tests {
             payload.len(),
             output
         );
-        // floor_char_boundary may produce slightly fewer chars than
-        // STRING_CHARS_LIMIT for multibyte strings (byte-safe slice)
+        // char_indices() truncation produces at most STRING_CHARS_LIMIT-1 chars,
+        // which is within the limit for multibyte strings
         assert!(
             s.chars().count() <= STRING_CHARS_LIMIT && s.chars().count() > 0,
             "Truncated string should be ≤{} chars, got {}: {}",
